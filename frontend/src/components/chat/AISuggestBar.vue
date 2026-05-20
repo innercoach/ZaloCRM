@@ -1,6 +1,6 @@
 <template>
   <div v-if="visible" class="ai-suggest-bar">
-    <div class="ai-suggest-icon">✨</div>
+    <div class="ai-suggest-icon"><v-icon size="16">mdi-creation-outline</v-icon></div>
     <span class="ai-suggest-label">AI gợi ý:</span>
     <div class="ai-suggest-pills">
       <div
@@ -18,10 +18,13 @@
         Đang sinh gợi ý…
       </div>
       <div v-if="!pills.length && !loading && error" class="ai-suggest-pill error">
-        ⚠ {{ error }}
+        <v-icon size="14">mdi-alert-circle-outline</v-icon>
+        {{ error }}
       </div>
     </div>
-    <button class="ai-refresh" :disabled="loading" title="Làm mới gợi ý" @click="$emit('refresh')">↻</button>
+    <button class="ai-refresh" :disabled="loading" title="Làm mới gợi ý" @click="$emit('refresh')">
+      <v-icon size="16">mdi-refresh</v-icon>
+    </button>
   </div>
 </template>
 
@@ -58,6 +61,7 @@ function truncated(text: string) {
   padding: 9px 17px;
   display: flex; align-items: center; gap: 9px;
   flex-shrink: 0;
+  min-width: 0;
 }
 .ai-suggest-icon {
   width: 31px; height: 31px;
@@ -76,6 +80,8 @@ function truncated(text: string) {
   display: flex; gap: 7px;
   overflow-x: auto;
   flex: 1;
+  min-width: 0;
+  -webkit-overflow-scrolling: touch;
 }
 .ai-suggest-pill {
   background: var(--smax-bg);
@@ -92,9 +98,16 @@ function truncated(text: string) {
 .ai-suggest-pill .ai-action { color: #9c27b0; font-weight: 600; margin-right: 5px; }
 .ai-suggest-pill.loading,
 .ai-suggest-pill.error { cursor: default; opacity: 0.85; }
-.ai-suggest-pill.error { border-color: #ef9a9a; color: #c62828; background: #ffebee; }
+.ai-suggest-pill.error {
+  border-color: #ef9a9a;
+  color: #c62828;
+  background: #ffebee;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .ai-refresh {
-  width: 31px; height: 31px;
+  width: 44px; height: 44px;
   border-radius: 50%;
   border: 1px solid var(--smax-grey-300);
   background: var(--smax-bg);
