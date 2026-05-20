@@ -83,6 +83,7 @@ const allMessages = computed(() => {
       albumIndex: null,
       albumTotal: null,
       _pending: true,
+      _pendingStatus: p.status,
     }));
   return [...messages.value, ...pending];
 });
@@ -105,6 +106,9 @@ onMounted(() => {
   fetchConversations();
   initSocket();
   window.addEventListener('online', onOnline);
+  if (navigator.onLine) {
+    void flush(sendMessageTo);
+  }
 });
 
 onUnmounted(() => {

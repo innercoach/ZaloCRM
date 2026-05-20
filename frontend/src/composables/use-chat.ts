@@ -118,6 +118,8 @@ export interface Message {
   albumTotal: number | null;
   reply?: ReplyMessageRef | null;
   reactions?: MessageReactionView[];
+  _pending?: boolean;
+  _pendingStatus?: 'pending' | 'sending' | 'failed';
 }
 
 // In-memory cache per-conv messages — quay lại conv cũ render ngay, fetch fresh background.
