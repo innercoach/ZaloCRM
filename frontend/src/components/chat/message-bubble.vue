@@ -185,6 +185,7 @@
         <!-- Timestamp -->
         <div class="bubble-time" :class="{ 'text-end': isSelf }">
           {{ formatTime(message.sentAt) }}
+          <span v-if="pendingLabel" class="pending-label">{{ pendingLabel }}</span>
         </div>
       </div>
 
@@ -377,6 +378,13 @@ const messageCaption = computed<string>(() => {
 });
 
 const formattedCaption = computed(() => highlightText(messageCaption.value));
+
+const pendingLabel = computed(() => {
+  if (!props.message._pending) return '';
+  if (props.message._pendingStatus === 'sending') return 'Đang gửi...';
+  if (props.message._pendingStatus === 'failed') return 'Chưa gửi được';
+  return 'Chờ gửi';
+});
 
 // ── Sticker — fetch metadata + CSS sprite animation cho animated stickers ──
 interface StickerMeta {
@@ -630,6 +638,12 @@ function openFile(href: string) {
   padding: 0 2px;
 }
 .bubble-time.text-end { text-align: right; }
+.pending-label {
+  margin-left: 6px;
+  color: #d6a84f;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
 
 .reminder-card {
   padding: 8px 12px;

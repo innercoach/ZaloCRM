@@ -110,6 +110,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/offline',
+    name: 'offline',
+    component: () => import('@/views/OfflineFallbackView.vue'),
+    meta: { layout: 'auth' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
     component: () => import('@/views/NotFoundView.vue'),

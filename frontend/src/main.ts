@@ -3,6 +3,7 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import { router } from './router/index';
 import { vuetify } from './plugins/vuetify';
+import '@/pwa/register-service-worker';
 import './assets/tokens.css';
 import './assets/main.css';
 
@@ -12,9 +13,3 @@ app.use(router);
 app.use(vuetify);
 app.mount('#app');
 
-// TODO: Re-enable PWA when vite-plugin-pwa supports vite 8
-// if ('serviceWorker' in navigator) {
-//   import('virtual:pwa-register').then(({ registerSW }) => {
-//     registerSW({ immediate: true });
-//   });
-// }
