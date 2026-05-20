@@ -1,5 +1,5 @@
 <template>
-  <v-bottom-navigation grow :model-value="activeTab" @update:model-value="navigate" class="golden-bottom-nav" style="position: fixed; bottom: 0; left: 0; right: 0; z-index: 100; padding-bottom: env(safe-area-inset-bottom);">
+  <v-bottom-navigation grow :model-value="activeTab" @update:model-value="navigate" class="golden-bottom-nav">
     <v-btn v-for="tab in tabs" :key="tab.path" :value="tab.path">
       <v-icon>{{ tab.icon }}</v-icon>
       <span class="text-caption">{{ tab.title }}</span>
@@ -33,10 +33,18 @@ function navigate(path: string) {
 
 <style scoped>
 .golden-bottom-nav {
+  position: fixed !important;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  height: calc(64px + env(safe-area-inset-bottom)) !important;
+  padding-bottom: env(safe-area-inset-bottom);
   background: rgba(16, 21, 34, 0.96) !important;
   border-top: 1px solid var(--gold-border);
   color: var(--gold-text-secondary) !important;
   backdrop-filter: blur(14px);
+  overflow: visible;
 }
 
 .golden-bottom-nav :deep(.v-btn--active) {
@@ -45,5 +53,12 @@ function navigate(path: string) {
 
 .golden-bottom-nav :deep(.v-btn) {
   min-width: 64px;
+  min-height: 56px;
+  padding-top: 4px;
+}
+
+.golden-bottom-nav :deep(.v-bottom-navigation__content) {
+  height: 64px;
+  align-items: stretch;
 }
 </style>

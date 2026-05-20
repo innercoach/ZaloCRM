@@ -22,9 +22,8 @@
       </v-btn>
     </v-app-bar>
 
-    <!-- Main content with padding for bottom nav -->
-    <v-main>
-      <div style="padding-bottom: 72px;">
+    <v-main class="mobile-main">
+      <div class="mobile-content">
         <slot />
       </div>
     </v-main>
@@ -73,6 +72,28 @@ function logout() {
   border-bottom: 1px solid var(--gold-border);
   color: var(--gold-text) !important;
   padding-top: env(safe-area-inset-top);
+}
+
+.mobile-golden-appbar :deep(.v-toolbar__content) {
+  min-height: 52px;
+  height: 52px !important;
+  overflow: visible;
+}
+
+.mobile-golden-appbar :deep(.v-btn) {
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-main {
+  background: var(--gold-bg);
+  overflow: hidden;
+}
+
+.mobile-content {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .mobile-brand-mark {
