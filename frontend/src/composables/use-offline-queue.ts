@@ -4,6 +4,7 @@ export interface PendingMessage {
   id: string;
   conversationId: string;
   content: string;
+  replyMessageId?: string | null;
   createdAt: string;
   status: 'pending' | 'sending' | 'failed';
 }
@@ -36,6 +37,7 @@ function normalizeMessage(item: unknown): PendingMessage | null {
     id: obj.id,
     conversationId: obj.conversationId,
     content: obj.content,
+    replyMessageId: typeof obj.replyMessageId === 'string' ? obj.replyMessageId : null,
     createdAt: obj.createdAt,
     status,
   };
@@ -61,19 +63,20 @@ let flushing = false;
 watch(pendingMessages, (val) => saveQueue(val), { deep: true });
 
 export function useOfflineQueue() {
-  function enqueue(conversationId: string, content: string) {
+  function enqueue(conversationId: string, content: string, replyMessageId?: string | null) {
     const trimmed = content.trim();
     if (!trimmed) return;
     pendingMessages.value.push({
       id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       conversationId,
       content: trimmed,
+      replyMessageId: replyMessageId ?? null,
       createdAt: new Date().toISOString(),
       status: 'pending',
     });
   }
 
-  async function flush(sendFn: (conversationId: string, content: string) => Promise<void>) {
+  async function flush(sendFn: (conversationId: string, content: string, replyMessageId?: string | null) => Promise<void>) {
     if (flushing || !navigator.onLine) return;
     flushing = true;
     try {
@@ -85,7 +88,7 @@ export function useOfflineQueue() {
           item.id === msg.id ? { ...item, status: 'sending' } : item
         ));
         try {
-          await sendFn(msg.conversationId, msg.content);
+          await sendFn(msg.conversationId, msg.content, msg.replyMessageId ?? null);
           pendingMessages.value = pendingMessages.value.filter(item => item.id !== msg.id);
         } catch {
           pendingMessages.value = pendingMessages.value.map(item => (

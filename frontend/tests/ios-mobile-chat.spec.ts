@@ -15,7 +15,7 @@ async function loginToken() {
   return payload.token as string;
 }
 
-test('iPhone WebKit chat thread stays inside viewport and AI trigger works', async ({ page }) => {
+test('iPhone WebKit chat thread stays inside viewport and AI trigger works', async ({ page }, testInfo) => {
   const token = await loginToken();
 
   await page.addInitScript((authToken) => {
@@ -26,7 +26,7 @@ test('iPhone WebKit chat thread stays inside viewport and AI trigger works', asy
   await page.goto(`${baseURL}/chat`, { waitUntil: 'networkidle' });
   await expect(page.getByText('Lan Anh').first()).toBeVisible();
 
-  await page.screenshot({ path: '.claude/browser-artifacts/ios-mobile-chat-list.png', fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('ios-mobile-chat-list.png'), fullPage: true });
   await page.getByText('Lan Anh').first().click();
   await expect(page.locator('.message-thread')).toBeVisible();
 
@@ -49,7 +49,7 @@ test('iPhone WebKit chat thread stays inside viewport and AI trigger works', asy
 
   await page.locator('.ai-btn').first().click();
   await expect(page.locator('.ai-suggest-bar')).toBeVisible();
-  await page.screenshot({ path: '.claude/browser-artifacts/ios-mobile-chat-ai.png', fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('ios-mobile-chat-ai.png'), fullPage: true });
 
   const aiMetrics = await page.evaluate(() => ({
     aiBar: document.querySelector('.ai-suggest-bar')?.getBoundingClientRect().toJSON(),

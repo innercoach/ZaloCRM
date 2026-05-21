@@ -91,7 +91,7 @@ const allMessages = computed(() => {
 async function handleSend(content: string, replyMessageId?: string | null) {
   if (!selectedConvId.value) return;
   if (!navigator.onLine) {
-    enqueue(selectedConvId.value, content);
+    enqueue(selectedConvId.value, content, replyMessageId);
     return;
   }
   await sendMessage(content, replyMessageId);

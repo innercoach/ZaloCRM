@@ -83,7 +83,7 @@ export default defineConfig({
         ],
       },
       devOptions: {
-        enabled: true,
+        enabled: process.env.VITE_PWA_DEV === 'true',
       },
     }),
   ],
