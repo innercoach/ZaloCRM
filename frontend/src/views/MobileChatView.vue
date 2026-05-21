@@ -30,9 +30,12 @@
         :ai-suggestion="aiSuggestion"
         :ai-suggestion-loading="aiSuggestionLoading"
         :ai-suggestion-error="aiSuggestionError"
+        :replying-to="replyingTo"
         class="mobile-message-thread"
         @send="handleSend"
         @ask-ai="generateAiSuggestion"
+        @set-reply-to="setReplyTo"
+        @cancel-reply-edit="onCancelReplyEdit"
         @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
       />
     </div>
@@ -44,6 +47,7 @@ import { onMounted, onUnmounted, watch, computed } from 'vue';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import { useChat } from '@/composables/use-chat';
+import { useChatOperations } from '@/composables/use-chat-operations';
 import { useOfflineQueue } from '@/composables/use-offline-queue';
 
 const {
@@ -56,6 +60,11 @@ const {
 } = useChat();
 
 const { pendingMessages, enqueue, flush } = useOfflineQueue();
+const { replyingTo, setReplyTo, clearReplyTo } = useChatOperations();
+
+function onCancelReplyEdit() {
+  clearReplyTo();
+}
 
 function onFilterAccount(id: string | null) {
   accountFilter.value = id;
