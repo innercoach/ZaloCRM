@@ -64,7 +64,11 @@ describe('POST /api/v1/conversations/:id/reactions', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ success: true });
-    expect(zaloOpsMock.addReaction).toHaveBeenCalledWith('za-1', '❤️', expect.objectContaining({ msgId: 'zalo-msg-1', threadId: 'ext-1' }));
+    expect(zaloOpsMock.addReaction).toHaveBeenCalledWith('za-1', '/-heart', expect.objectContaining({
+      data: { msgId: 'zalo-msg-1', cliMsgId: 'zalo-msg-1' },
+      threadId: 'ext-1',
+      type: 0,
+    }));
     expect(eventBufferMock.recordReaction).toHaveBeenCalled();
     expect(prismaMock.messageReaction.upsert).toHaveBeenCalled();
   });
@@ -196,7 +200,7 @@ describe('POST /api/v1/conversations/:id/sticker', () => {
     const app = buildApp();
     const res = await app.inject({ method: 'POST', url: '/api/v1/conversations/conv-1/sticker', payload: { stickerId: 101 } });
     expect(res.statusCode).toBe(200);
-    expect(zaloOpsMock.sendSticker).toHaveBeenCalledWith('za-1', 101, 'ext-1', 0);
+    expect(zaloOpsMock.sendSticker).toHaveBeenCalledWith('za-1', { id: 101, cateId: 0, type: 0 }, 'ext-1', 0);
     expect(prismaMock.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ contentType: 'sticker' }) }));
   });
 
