@@ -110,12 +110,28 @@ export async function changePin(userId: string, oldPin: string, newPin: string):
 
   const valid = await bcrypt.compare(oldPin, user.privacyPinHash);
   if (!valid) {
-    // Increment fail count (atomic, race-safe)
-    await prisma.user.update({
+    const updated = await prisma.user.update({
       where: { id: userId },
       data: { privacyFailedCount: { increment: 1 } },
+      select: { privacyFailedCount: true },
     });
-    throw new Error('PIN cũ sai');
+    const failed = updated.privacyFailedCount;
+    let lockedUntil: Date | null = null;
+    if (failed >= 10) lockedUntil = new Date(Date.now() + PIN_FAIL_LOCKOUT_10);
+    else if (failed >= 5) lockedUntil = new Date(Date.now() + PIN_FAIL_LOCKOUT_5);
+    if (lockedUntil) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { privacyLockedUntil: lockedUntil },
+      });
+    }
+    throw new Error(
+      failed >= 10
+        ? 'PIN sai 10 lần — khoá 1h. Liên hệ admin nếu cần reset.'
+        : failed >= 5
+          ? `PIN sai ${failed} lần — khoá 5 phút.`
+          : `PIN cũ sai. Còn ${10 - failed} lần thử trước khi khoá.`,
+    );
   }
 
   const newHash = await bcrypt.hash(newPin, 10);
