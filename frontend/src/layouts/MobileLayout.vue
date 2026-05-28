@@ -88,13 +88,15 @@ function logout() {
 }
 
 .mobile-main {
+  --mobile-app-bar-offset: calc(48px + env(safe-area-inset-top));
   background: var(--gold-bg);
   overflow: hidden;
+  padding-top: var(--mobile-app-bar-offset) !important;
 }
 
 .mobile-content {
   height: 100%;
-  min-height: 0;
+  min-height: calc(100dvh - var(--mobile-app-bar-offset));
   overflow: auto;
   box-sizing: border-box;
   padding-bottom: calc(72px + env(safe-area-inset-bottom));

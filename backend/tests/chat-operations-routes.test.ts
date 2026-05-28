@@ -94,6 +94,7 @@ describe('POST /api/v1/conversations/:id/reactions', () => {
       expect.objectContaining({
         data: { msgId: 'zalo-msg-1', cliMsgId: 'cli-msg-1' },
         threadId: 'ext-1',
+        type: 0,
       }),
     );
     expect(prismaMock.messageReaction.upsert).toHaveBeenCalled();

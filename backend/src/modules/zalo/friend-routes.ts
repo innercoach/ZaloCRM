@@ -390,8 +390,49 @@ export async function friendRoutes(app: FastifyInstance) {
     try {
       if (!await checkAccess(request, reply, accountId, 'read')) return;
       await resolveAccount(accountId, user.orgId);
-      const data = await zaloOps.getFriendRequestStatus(accountId, userId);
-      return { data };
+
+      let statusUid = userId;
+      let resolvedFrom: string | null = null;
+      try {
+        const convFriend = await prisma.friend.findUnique({
+          where: { zaloAccountId_zaloUidInNick: { zaloAccountId: accountId, zaloUidInNick: userId } },
+          select: { contactId: true, friendshipStatus: true },
+        });
+        if (convFriend?.contactId && convFriend.friendshipStatus !== 'pending_received') {
+          const pendingSibling = await prisma.friend.findFirst({
+            where: {
+              zaloAccountId: accountId,
+              contactId: convFriend.contactId,
+              friendshipStatus: 'pending_received',
+              zaloUidInNick: { not: userId },
+            },
+            select: { zaloUidInNick: true },
+          });
+          if (pendingSibling?.zaloUidInNick) {
+            statusUid = pendingSibling.zaloUidInNick;
+            resolvedFrom = userId;
+          }
+        }
+      } catch (resolveErr: any) {
+        logger.warn(`[friend-op] UID resolve failed for status`, { userId, err: resolveErr?.message });
+      }
+
+      try {
+        const data = await zaloOps.getFriendRequestStatus(accountId, statusUid);
+        return { data, statusUid, resolvedFrom };
+      } catch (statusErr: any) {
+        const errMsg = String(statusErr?.message || '');
+        if (errMsg.includes('Tham số không hợp lệ') || errMsg.includes('Invalid')) {
+          logger.warn(`[friend-op] getFriendRequestStatus invalid UID`, { accountId, userId, statusUid, err: errMsg });
+          return {
+            data: { is_friend: 0, is_requested: 0, is_requesting: 0 },
+            statusUid,
+            resolvedFrom,
+            stale: true,
+          };
+        }
+        throw statusErr;
+      }
     } catch (err) {
       return handleError(reply, err, 'friend-op');
     }
