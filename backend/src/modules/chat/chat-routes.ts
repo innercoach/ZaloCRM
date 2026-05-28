@@ -136,18 +136,48 @@ export async function chatRoutes(app: FastifyInstance) {
       scoreMax = '',
       // Mới — Friend level (per-pair aggregate)
       relationshipKindAny = '', // CSV: friend,pending_friend,chatting_stranger,ghost
+      // Phase 6+ — Inbox Triage Filter params
+      folderId = '',            // AccountFolder ID — translate sang accountIds
+      sortMode = '',            // 'unread-first' | 'recent' (default recent)
+      autoTagsAny = '',         // CSV: active,stuck,cold,ready,atrisk,rewarmed,frozen
+      stuck = '',               // 'true' → friends.some.stuckSince != null
+      ready = '',               // 'true' → score >= 80
+      zaloLabels = '',          // CSV: filter by Zalo Real labels
+      engagementPattern = '',   // Phase 8 — CSV: hot,champion,stable,cooling,cold
     } = request.query as QueryParams;
 
     const where: any = { orgId: user.orgId };
     if (tab) where.tab = tab;
     if (threadType === 'user' || threadType === 'group') where.threadType = threadType;
 
-    // accountIds CSV ưu tiên hơn accountId single (multi-nick FE)
-    const accountIdList = accountIds
-      ? accountIds.split(',').map(s => s.trim()).filter(Boolean)
-      : accountId ? [accountId] : [];
+    // Phase 6+ — folderId translate sang accountIds (override accountId/accountIds nếu set)
+    let folderAccountIds: string[] | null = null;
+    if (folderId) {
+      const folder = await prisma.accountFolder.findUnique({
+        where: { id: folderId },
+        include: { members: { select: { zaloAccountId: true } } },
+      });
+      if (folder && folder.userId === user.id) {
+        folderAccountIds = folder.members.map((m) => m.zaloAccountId);
+      }
+    }
+
+    // accountIds CSV ưu tiên hơn accountId single (multi-nick FE).
+    // folderAccountIds (Phase 6+ folder filter) override nếu có.
+    let accountIdList: string[] = [];
+    if (folderAccountIds !== null) {
+      accountIdList = folderAccountIds;
+    } else {
+      accountIdList = accountIds
+        ? accountIds.split(',').map(s => s.trim()).filter(Boolean)
+        : accountId ? [accountId] : [];
+    }
     if (accountIdList.length === 1) where.zaloAccountId = accountIdList[0];
     else if (accountIdList.length > 1) where.zaloAccountId = { in: accountIdList };
+    else if (folderAccountIds !== null && folderAccountIds.length === 0) {
+      // Folder rỗng (chưa add nick nào) → return empty list
+      where.zaloAccountId = 'EMPTY_FOLDER_NO_MATCH';
+    }
 
     // Contact-level filter — gộp vào where.contact nested
     const contactWhere: Record<string, unknown> = {};
@@ -171,18 +201,108 @@ export async function chatRoutes(app: FastifyInstance) {
     }
     if (tags) {
       const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
-      if (tagList.length > 0) contactWhere.tags = { array_contains: tagList };
+      if (tagList.length > 0) {
+        // Tag filter check CẢ 3 nguồn (theo mergedTags FE):
+        //   1. Contact.tags (org-level CRM tags)
+        //   2. Friend.crmTagsPerNick (per-pair CRM tags, kèm 🔵 Zalo-mirrored)
+        //   3. Friend.zaloLabels (Zalo Real native labels, sync 2-way)
+        // Trước đây chỉ check Contact.tags → user thấy tag "MKT HS" ở chip bar
+        // (qua mergedTags) nhưng filter không match KH có tag chỉ ở Friend level.
+        //
+        // Strip "🔵 " prefix khi compare zaloLabels.name vì FE render với prefix
+        // nhưng backend zaloLabels lưu name gốc.
+        const cleanTagList = tagList.map((t) => t.replace(/^🔵\s+/, ''));
+        const tagSourceOR: Array<Record<string, unknown>> = [
+          { tags: { array_contains: tagList } },
+          {
+            friends: {
+              some: {
+                OR: [
+                  { crmTagsPerNick: { array_contains: tagList } },
+                  ...cleanTagList.map((name) => ({
+                    zaloLabels: { path: ['$[*].name'], array_contains: [name] },
+                  })),
+                ],
+              },
+            },
+          },
+        ];
+        // Combine với search OR (nếu có) qua AND wrapper — tránh overwrite.
+        if (contactWhere.OR) {
+          contactWhere.AND = [
+            { OR: contactWhere.OR as Record<string, unknown>[] },
+            { OR: tagSourceOR },
+          ];
+          delete contactWhere.OR;
+        } else {
+          contactWhere.OR = tagSourceOR;
+        }
+      }
     }
     // KH có ít nhất 1 Friend với kind trong list (Friend level filter)
     if (relationshipKindAny) {
       const kinds = relationshipKindAny.split(',').map(s => s.trim()).filter(Boolean);
       if (kinds.length > 0) contactWhere.friends = { some: { relationshipKind: { in: kinds } } };
     }
+    // Phase 8 — Engagement pattern filter (1+ pattern from heatmap classification)
+    if (engagementPattern) {
+      const patterns = engagementPattern.split(',').map((s) => s.trim()).filter(Boolean);
+      if (patterns.length === 1) contactWhere.engagementPattern = patterns[0];
+      else if (patterns.length > 1) contactWhere.engagementPattern = { in: patterns };
+    }
     if (Object.keys(contactWhere).length > 0) where.contact = contactWhere;
 
     // Advanced filters
     if (unread === 'true') where.unreadCount = { gt: 0 };
     if (unreplied === 'true') where.isReplied = false;
+
+    // Phase 6+ Quick Pills filters — apply qua Contact + Friend
+    // Stuck → có ít nhất 1 Friend với stuckSince != null
+    if (stuck === 'true') {
+      const existingFriends = (contactWhere.friends as any) || {};
+      const someClause = existingFriends.some || {};
+      contactWhere.friends = {
+        some: { ...someClause, stuckSince: { not: null } },
+      };
+    }
+    // Ready → Contact aggregate leadScore >= 80 (đã cover bởi scoreMin nếu set, đây là shortcut)
+    if (ready === 'true') {
+      const existingLeadScore = (contactWhere.leadScore as any) || {};
+      contactWhere.leadScore = { ...existingLeadScore, gte: 80 };
+    }
+    // Auto-tags filter — Friend có autoTags chứa bất kỳ tag nào trong list
+    if (autoTagsAny) {
+      const tagList = autoTagsAny.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tagList.length > 0) {
+        const existingFriends = (contactWhere.friends as any) || {};
+        const someClause = existingFriends.some || {};
+        // Postgres JSON array_contains_any cần or-chain hoặc raw SQL.
+        // Workaround: union per tag (vẫn dùng `some` với OR).
+        const orConditions = tagList.map((tag) => ({ autoTags: { array_contains: [tag] } }));
+        contactWhere.friends = {
+          some: { ...someClause, OR: orConditions },
+        };
+      }
+    }
+    // Zalo Labels filter — Friend có zaloLabels chứa label name
+    if (zaloLabels) {
+      const labelList = zaloLabels.split(',').map((t) => t.trim()).filter(Boolean);
+      if (labelList.length > 0) {
+        const existingFriends = (contactWhere.friends as any) || {};
+        const someClause = existingFriends.some || {};
+        // zaloLabels là array of {id,name,color} — cần raw match
+        // Workaround: array_contains check
+        const orConditions = labelList.map((name) => ({
+          zaloLabels: { path: ['$[*].name'], array_contains: [name] },
+        }));
+        contactWhere.friends = {
+          some: { ...someClause, OR: orConditions },
+        };
+      }
+    }
+
+    // Re-apply contactWhere nếu đã modify trên (stuck/ready/tags)
+    if (Object.keys(contactWhere).length > 0) where.contact = contactWhere;
 
     // Date range — accept cả from/to legacy lẫn dateFrom/dateTo mới
     const dFrom = dateFrom || from;
@@ -216,62 +336,175 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
+    // Sort mode — Phase 6+ "Chưa đọc lên trên" vs "Mới nhất lên trên"
+    // unread-first: composite [unreadCount > 0 DESC, lastMessageAt DESC]
+    // Recent (default): [lastMessageAt DESC]
+    const orderByClause: any =
+      sortMode === 'unread-first'
+        ? [{ unreadCount: 'desc' }, { lastMessageAt: 'desc' }]
+        : { lastMessageAt: 'desc' };
+
     const [conversations, total] = await Promise.all([
       prisma.conversation.findMany({
         where,
         include: {
-          // Contact: full include thay vì select hẹp — tránh race khi list refresh
-          // overwrite mất gender/totals/birthDate/... đã load ở /conversations/:id detail.
-          contact: true,
-          zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true } },
+          // M-tier (2026-05-21): narrow contact select — chỉ field LIST view cần.
+          // Detail fields (gender/totals/birthDate/lastOutboundAt/autoTags/priorityScore...)
+          // sẽ được preserve qua FE merge logic (use-chat.ts mergeConversation):
+          // existing.contact deep-merge với incoming.contact để KHÔNG mất detail
+          // đã load từ /conversations/:id. Trước fix: ~50 field/row × 100 rows = payload bloat.
+          contact: {
+            select: {
+              id: true,
+              fullName: true,
+              crmName: true,
+              avatarUrl: true,
+              phone: true,
+              zaloUid: true,
+              tags: true,
+              leadScore: true,
+              engagementPattern: true,
+              engagementScore: true,
+              engagementTrend: true,
+              statusId: true,
+              assignedUserId: true,
+              priorityScore: true,
+            },
+          },
+          zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, privacyMode: true, ownerUserId: true } },
           pins: { select: { id: true } },
           messages: {
             take: 1,
-            orderBy: { sentAt: 'desc' },
-            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, reactions: { select: { emoji: true, reactorId: true } } },
+            // Primary sort by Zalo Snowflake numeric (match 100% Zalo Web), sentAt fallback
+            // cho CRM-sent in-flight messages chưa nhận echo zaloMsgId.
+            orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
+            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, editedAt: true, reactions: { select: { emoji: true, reactorId: true } } },
           },
         },
-        orderBy: { lastMessageAt: 'desc' },
+        orderBy: orderByClause,
         skip: (parseInt(page) - 1) * Math.min(parseInt(limit), 200),
         take: Math.min(parseInt(limit), 200),
       }),
       prisma.conversation.count({ where }),
     ]);
 
-    // Batch fetch Friend records cho user threads để FE biết friendship state
-    const userPairs = conversations
-      .filter(c => c.threadType === 'user' && c.contactId)
-      .map(c => ({ zaloAccountId: c.zaloAccountId, contactId: c.contactId! }));
+    // Batch fetch Friend records cho user threads để FE biết friendship state.
+    // QUAN TRỌNG: lookup theo (zaloAccountId × zaloUidInNick = conv.externalThreadId)
+    // — đây là unique key cho Friend row. KHÔNG dùng (accountId × contactId) vì cùng
+    // contact có thể có nhiều Friend rows cùng account (per-nick UID khác nhau từ
+    // session reset). Mỗi conv bind đúng 1 friend row qua externalThreadId.
+    // Dedup userPairs trước friend.findMany — list 100 rows có thể có conv trùng
+    // (account, uid) khi seed legacy. OR-clause với pair trùng → planner duplicate
+    // index scan (M-tier optimization 2026-05-21).
+    const userPairsRaw = conversations
+      .filter(c => c.threadType === 'user' && c.contactId && c.externalThreadId)
+      .map(c => ({ zaloAccountId: c.zaloAccountId, zaloUidInNick: c.externalThreadId! }));
+    const pairKeys = new Set<string>();
+    const userPairs: typeof userPairsRaw = [];
+    for (const p of userPairsRaw) {
+      const key = `${p.zaloAccountId}:${p.zaloUidInNick}`;
+      if (!pairKeys.has(key)) {
+        pairKeys.add(key);
+        userPairs.push(p);
+      }
+    }
     let friendMap = new Map<string, {
+      id: string;
       relationshipKind: string; friendshipStatus: string;
       becameFriendAt: Date | null; firstMessageAt: Date | null;
+      updatedAt: Date;
       crmTagsPerNick: unknown;
+      aliasInNick: string | null;        // ui-phase5: "Tên gợi nhớ" Zalo sync 2-way
+      // Per-pair counter (FE header cột 3 đọc — fix bug 235/198 revert 0/0)
+      totalInbound: number;
+      totalOutbound: number;
+      lastInboundAt: Date | null;
+      lastOutboundAt: Date | null;
+      // Phase 6+ score + auto-tag display
+      leadScore: number;
+      autoTags: unknown;
+      stuckSince: Date | null;
+      statusName: string | null;
+      statusColor: string | null;
     }>();
     if (userPairs.length) {
       const friends = await prisma.friend.findMany({
-        where: { OR: userPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { contactId: p.contactId }] })) },
+        where: { OR: userPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { zaloUidInNick: p.zaloUidInNick }] })) },
         select: {
+          id: true,                            // Friend.id để FE fetch /scoring/:friendId/breakdown
           zaloAccountId: true, contactId: true,
+          zaloUidInNick: true,                 // dùng làm map key
           relationshipKind: true, friendshipStatus: true,
           becameFriendAt: true, firstMessageAt: true,
+          updatedAt: true,                     // last status change — dùng cho pendingDaysLabel
           crmTagsPerNick: true,                // per-pair CRM tags (kèm Zalo-mirrored "🔵 X")
+          aliasInNick: true,                   // "Tên gợi nhớ" Zalo, sync 2-way (ui-phase5)
+          // ── Per-pair counter ─────────────────────────────────────────────
+          // KHÔNG include trước đây gây bug: header MessageThread cột 3 đọc
+          // friendship.totalInbound/Outbound → list refresh override conv →
+          // counter rớt về 0/0 (vì ?? 0 fallback). Detail endpoint /:id có,
+          // list endpoint thiếu → race khi fetchConversations() chạy sau
+          // selectConversation. Fix: select + map ra response cho stable.
+          totalInbound: true,
+          totalOutbound: true,
+          lastInboundAt: true,
+          lastOutboundAt: true,
+          // Phase 6+ — Score + auto-tags + stuck cho render badge trong conv list
+          leadScore: true,
+          autoTags: true,
+          stuckSince: true,
+          statusId: true,
+          statusRef: { select: { name: true, color: true } },
         },
       });
-      friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.contactId}`, {
+      // Map key = (accountId × zaloUidInNick) khớp với conv.externalThreadId
+      // → mỗi conv lấy ĐÚNG friend row của thread đó, không dedup nhầm KH có nhiều UID.
+      friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.zaloUidInNick}`, {
+        id: f.id,
         relationshipKind: f.relationshipKind,
         friendshipStatus: f.friendshipStatus,
         becameFriendAt: f.becameFriendAt,
         firstMessageAt: f.firstMessageAt,
+        updatedAt: f.updatedAt,
         crmTagsPerNick: f.crmTagsPerNick,
+        aliasInNick: f.aliasInNick,          // ui-phase5
+        // Per-pair counter — header chat cột 3 dùng (fix bug 235/198 → 0/0)
+        totalInbound: f.totalInbound,
+        totalOutbound: f.totalOutbound,
+        lastInboundAt: f.lastInboundAt,
+        lastOutboundAt: f.lastOutboundAt,
+        // Phase 6+ score + auto-tag display data
+        leadScore: f.leadScore,
+        autoTags: f.autoTags,
+        stuckSince: f.stuckSince,
+        statusName: f.statusRef?.name ?? null,
+        statusColor: f.statusRef?.color ?? null,
       }]));
     }
 
+    // PRIVACY REDACT 2026-05-22 — apply redactConversationRow + redactMessage
+    // cho preview text ở cột 2 khi conv thuộc nick privacy='main' + non-owner.
+    const { buildPrivacyContext, redactConversationRow, redactMessage } = await import('../privacy/redact.js');
+    const privacyCtx = await buildPrivacyContext(request);
+
     return {
-      conversations: conversations.map((c) => ({
-        ...c,
-        isPinned: c.pins.length > 0,
-        friendship: c.contactId ? friendMap.get(`${c.zaloAccountId}:${c.contactId}`) || null : null,
-      })),
+      conversations: conversations.map((c) => {
+        const base = {
+          ...c,
+          isPinned: c.pins.length > 0,
+          friendship: c.contactId && c.externalThreadId
+            ? friendMap.get(`${c.zaloAccountId}:${c.externalThreadId}`) || null
+            : null,
+        };
+        const redactedConv = redactConversationRow(base as any, privacyCtx);
+        // Cũng redact preview message (snippet cuối trong messages[0])
+        if ((redactedConv as any).messages?.length && (redactedConv as any).redacted) {
+          (redactedConv as any).messages = (redactedConv as any).messages.map((m: any) =>
+            redactMessage(m, c as any, privacyCtx),
+          );
+        }
+        return redactedConv;
+      }),
       total,
       page: parseInt(page),
       limit: Math.min(parseInt(limit), 200),
@@ -303,12 +536,14 @@ export async function chatRoutes(app: FastifyInstance) {
       hasConversation: boolean;
       becameFriendAt: Date | null;
       firstMessageAt: Date | null;
+      updatedAt: Date;
       totalInbound: number;
       totalOutbound: number;
       leadScore: number;
       statusRef: { id: string; name: string; color: string | null; order: number } | null;
       zaloLabels: unknown;
       crmTagsPerNick: unknown;
+      aliasInNick: string | null;
     } | null = null;
     if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
       const f = await prisma.friend.findUnique({
@@ -320,12 +555,14 @@ export async function chatRoutes(app: FastifyInstance) {
           hasConversation: true,
           becameFriendAt: true,
           firstMessageAt: true,
+          updatedAt: true,
           totalInbound: true,
           totalOutbound: true,
           leadScore: true,
           statusRef: { select: { id: true, name: true, color: true, order: true } },
           zaloLabels: true,
           crmTagsPerNick: true,
+          aliasInNick: true,
         },
       });
       friendship = f;
@@ -463,26 +700,40 @@ export async function chatRoutes(app: FastifyInstance) {
   });
 
   // ── List messages for a conversation (paginated, newest first) ──────────
-  app.get('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('read') }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/conversations/:id/messages', {
+    preHandler: requireZaloAccess('read'),
+    // Privacy phase integration: main-nick conv content sẽ bị redact ▒▒▒▒ ở middleware Privacy
+    config: { contentClass: 'content' as const, rbacResource: 'conversation' as const, rbacAction: 'access' as const },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
     const { page = '1', limit = '50' } = request.query as QueryParams;
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
-      select: { id: true },
+      select: {
+        id: true,
+        zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+      },
     });
     if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
+
+    // Phase Riêng Tư 2026-05-22: redact content nếu conv main-nick + viewer không own + chưa unlock
+    const { buildPrivacyContext, redactMessage } = await import('../privacy/redact.js');
+    const privacyCtx = await buildPrivacyContext(request);
 
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
         where: { conversationId: id },
-        orderBy: { sentAt: 'desc' },
+        // Primary sort by Zalo Snowflake (zaloMsgIdNum) — match Zalo Web order.
+        // sentAt fallback chỉ kick in cho row chưa có zaloMsgIdNum (CRM in-flight).
+        orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
         skip: (parseInt(page) - 1) * parseInt(limit),
         take: parseInt(limit),
         select: {
           id: true,
           zaloMsgId: true,
+          zaloMsgIdNum: true, // FE primary sort key (string format vì BigInt → JSON via serializer)
           senderUid: true,
           senderName: true,
           content: true,
@@ -490,6 +741,12 @@ export async function chatRoutes(app: FastifyInstance) {
           senderType: true,
           sentAt: true,
           isDeleted: true,
+          // Edit audit (2026-05-21) — FE render badge "(đã sửa)" + tooltip nội dung gốc
+          originalContent: true,
+          editedAt: true,
+          // Read receipts (Wave 1+2 2026-05-21) — FE render tick xám / tick xanh
+          deliveredAt: true,
+          seenAt: true,
           quote: true,
           attachments: true,
           albumKey: true,
@@ -501,14 +758,27 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.message.count({ where: { conversationId: id } }),
     ]);
 
-    return { messages: messages.reverse(), total, page: parseInt(page), limit: parseInt(limit) };
+    const ordered = messages.reverse();
+    const redacted = ordered.map((m) => {
+      const r = redactMessage(m as any, conversation as any, privacyCtx);
+      // BigInt zaloMsgIdNum → string cho JSON serialize
+      return { ...r, zaloMsgIdNum: (r as any).zaloMsgIdNum?.toString() ?? null };
+    });
+    return { messages: redacted, total, page: parseInt(page), limit: parseInt(limit) };
   });
 
   // ── Send message ─────────────────────────────────────────────────────────
   app.post('/api/v1/conversations/:id/messages', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { content, replyMessageId } = request.body as { content: string; replyMessageId?: string };
+    // 2026-05-21: thêm `styles` cho Zalo RTF (bold/italic/underline/strikethrough).
+    // Format: [{st: 'b'|'i'|'u'|'s', start: number, len: number}, ...]
+    // FE extract từ Tiptap editor JSON, BE pass thẳng vào api.sendMessage.
+    const { content, replyMessageId, styles } = request.body as {
+      content: string;
+      replyMessageId?: string;
+      styles?: Array<{ st: string; start: number; len: number }>;
+    };
 
     if (!content?.trim()) return reply.status(400).send({ error: 'Content required' });
 
@@ -520,6 +790,18 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    // PRIVACY GUARD 2026-05-22: nick privacy='main' → chỉ chính chủ (owner) gửi được
+    // qua UI. Bot/automation đi qua zaloPool trực tiếp (không qua route này) → vẫn OK.
+    if (conversation.zaloAccount.privacyMode === 'main') {
+      const senderUserId = (user as any).userId ?? user.id;
+      if (conversation.zaloAccount.ownerUserId !== senderUserId) {
+        return reply.status(403).send({
+          error: 'Nick này đang bật Riêng tư — chỉ chính chủ mới gửi tin nhắn được. Vui lòng nhờ chủ nick gửi.',
+          code: 'PRIVACY_LOCKED',
+        });
+      }
+    }
 
     // Rate limit check — prevent account blocking
     const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
@@ -548,7 +830,14 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
-      const sendResult = await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType);
+      // 2026-05-21 RTF: nếu có styles từ FE rich-text-editor → pass vào zca-js MessageContent.
+      // zca-js sendMessage signature: { msg, styles?, quote?, ... } → Zalo server encode + broadcast format.
+      const sendPayload: Record<string, unknown> = { msg: content };
+      if (Array.isArray(styles) && styles.length > 0) {
+        sendPayload.styles = styles;
+      }
+      if (quote) sendPayload.quote = quote;
+      const sendResult = await instance.api.sendMessage(sendPayload, threadId, threadType);
       // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
       // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
       const sr = sendResult as unknown as { message?: { msgId?: number | string } | null; attachment?: Array<{ msgId?: number | string }> };
@@ -558,16 +847,26 @@ export async function chatRoutes(app: FastifyInstance) {
         logger.warn(`[chat] sendMessage không trả msgId — shape=${JSON.stringify(sendResult).slice(0, 200)}`);
       }
 
+      // 2026-05-21 RTF: nếu có styles → lưu content dạng JSON rich (matches Zalo echo format)
+      // + contentType='rich' để special-message-renderer render đúng bold/italic. Listener echo
+      // sau dedup sẽ update content theo Zalo echo (cùng shape) → vẫn đẹp.
+      const hasStyles = Array.isArray(styles) && styles.length > 0;
+      const persistedContent = hasStyles
+        ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
+        : content;
+      const persistedContentType = hasStyles ? 'rich' : 'text';
+
       const message = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
           zaloMsgId: zaloMsgId || null,
+          zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
           senderType: 'self',
           senderUid: conversation.zaloAccount.zaloUid || '',
           senderName: 'Staff',
-          content,
-          contentType: 'text',
+          content: persistedContent,
+          contentType: persistedContentType,
           quote: quote ?? undefined,
           sentAt: new Date(),
           repliedByUserId: user.id,
@@ -593,10 +892,22 @@ export async function chatRoutes(app: FastifyInstance) {
       void applyContactAggregateFromMessage(aggInput);
       void applyFriendAggregate(aggInput);
 
+      // FIX 2026-05-21: BigInt zaloMsgIdNum không serialize được trong socket.io + JSON.
+      // Cast trước khi emit + return.
+      const safeMessage = { ...message, zaloMsgIdNum: message.zaloMsgIdNum?.toString() ?? null };
       const io = (app as any).io as Server;
-      io?.emit('chat:message', { accountId: conversation.zaloAccountId, message, conversationId: id });
+      // PRIVACY 2026-05-22: kèm _privacyMeta để FE detect & blur cho non-owner
+      io?.emit('chat:message', {
+        accountId: conversation.zaloAccountId,
+        message: safeMessage,
+        conversationId: id,
+        _privacyMeta: {
+          privacyMode: conversation.zaloAccount.privacyMode,
+          ownerUserId: conversation.zaloAccount.ownerUserId,
+        },
+      });
 
-      return message;
+      return safeMessage;
     } catch (err) {
       logger.error('[chat] Send message error:', err);
       return reply.status(500).send({ error: 'Failed to send message' });
@@ -695,6 +1006,7 @@ export async function chatRoutes(app: FastifyInstance) {
             id: randomUUID(),
             conversationId: id,
             zaloMsgId: zaloMsgId || null,
+            zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
             senderType: 'self',
             senderUid: conversation.zaloAccount.zaloUid || '',
             senderName: 'Staff',
@@ -714,7 +1026,16 @@ export async function chatRoutes(app: FastifyInstance) {
 
       const io = (app as any).io as Server;
       for (const m of createdMessages) {
-        io?.emit('chat:message', { accountId: conversation.zaloAccountId, message: m, conversationId: id });
+        // PRIVACY 2026-05-22: kèm _privacyMeta để FE detect & blur cho non-owner
+        io?.emit('chat:message', {
+          accountId: conversation.zaloAccountId,
+          message: m,
+          conversationId: id,
+          _privacyMeta: {
+            privacyMode: conversation.zaloAccount.privacyMode,
+            ownerUserId: conversation.zaloAccount.ownerUserId,
+          },
+        });
       }
 
       return { success: true, count: tmpFiles.length, messages: createdMessages };

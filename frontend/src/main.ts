@@ -6,6 +6,7 @@ import { vuetify } from './plugins/vuetify';
 import '@/pwa/register-service-worker';
 import './assets/tokens.css';
 import './assets/main.css';
+import './assets/rbac-page.css';
 
 const app = createApp(App);
 app.use(createPinia());

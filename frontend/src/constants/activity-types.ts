@@ -37,7 +37,7 @@ export const CATEGORY_META: Record<ActivityCategory, CategoryMeta> = {
   appointment:   { label: 'Lịch hẹn',      icon: '📅', color: '#C2185B', defaultVisible: true },
   interaction:   { label: 'Tương tác',     icon: '💬', color: '#5D4037', defaultVisible: false }, // nhiều event
   system:        { label: 'Hệ thống',      icon: '⚙️', color: '#546E7A', defaultVisible: false },
-  automation:    { label: 'Tự động (Bot)', icon: '🤖', color: '#00897B', defaultVisible: false },
+  automation:    { label: 'Tự động (Bot)', icon: '🤖', color: '#00897B', defaultVisible: true }, // bao gồm auto_tag_change — sale cần thấy KH state change
 };
 
 /* Action-level metadata — icon đặc biệt + label động cho từng action.
@@ -105,6 +105,7 @@ export const ACTION_META: Record<string, ActionMeta> = {
   bot_tag_auto:       { label: 'Bot auto-tag' },
   bot_score_calc:     { label: 'Bot tính điểm' },
   bot_status_suggest: { label: 'Bot suggest status' },
+  auto_tag_change:    { label: 'Cập nhật auto-tag', icon: '🤖' },
 };
 
 export function categoryOf(action: string, fallback: ActivityCategory = 'system'): ActivityCategory {
@@ -129,6 +130,7 @@ export function categoryOf(action: string, fallback: ActivityCategory = 'system'
     parent_candidate_accept: 'system', contact_merge: 'system',
     contact_split: 'system', data_import: 'system', data_export: 'system',
     bot_tag_auto: 'automation', bot_score_calc: 'automation', bot_status_suggest: 'automation',
+    auto_tag_change: 'automation',
   };
   return map[action] || fallback;
 }
