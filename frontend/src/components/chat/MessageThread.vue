@@ -2200,6 +2200,7 @@ watch(() => props.editingMessage?.id, async (id) => {
   border-bottom: 1px solid var(--smax-grey-200);
   display: flex; align-items: center; gap: 13px;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .ch-info {
@@ -2234,6 +2235,7 @@ watch(() => props.editingMessage?.id, async (id) => {
   padding: 3px 9px 3px 5px;
   border-radius: 13px;
   font-size: 12px; font-weight: 500;
+  flex-shrink: 0;
 }
 .ch-gender-chip .gender-svg {
   width: 16px; height: 16px;
@@ -2314,7 +2316,11 @@ watch(() => props.editingMessage?.id, async (id) => {
 }
 .pill-success { background: rgba(0,200,83,0.12); color: #00897b; }
 
-.ch-actions { display: flex; gap: 5px; align-items: center; }
+.ch-actions {
+  display: flex; gap: 5px; align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+}
 .btn-action {
   padding: 6px 11px;
   border-radius: 7px;
@@ -2877,4 +2883,74 @@ watch(() => props.editingMessage?.id, async (id) => {
 }
 .zlbl-manage:hover { background: var(--smax-grey-50); color: var(--smax-primary); }
 .manage-icon { font-size: 14px; }
+
+@media (max-width: 768px) {
+  .chat-header {
+    min-height: 50px;
+    padding: 6px 10px;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .chat-header :deep(.smax-av) {
+    width: 34px !important;
+    height: 34px !important;
+    flex: 0 0 34px;
+  }
+
+  .ch-info {
+    flex: 1 1 auto;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .ch-row-1 {
+    gap: 0;
+  }
+
+  .ch-row-2,
+  .ch-sep,
+  .ch-gender-chip,
+  .zlbl-trigger,
+  .btn-action,
+  .ch-actions .icon-btn.on {
+    display: none;
+  }
+
+  .ch-name {
+    font-size: 15px;
+    line-height: 20px;
+    max-width: 100%;
+  }
+
+  .ch-actions {
+    gap: 0;
+    align-self: center;
+  }
+
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+}
+
+@media (max-width: 430px) {
+  .chat-header {
+    min-height: 48px;
+    padding: 6px 8px;
+    gap: 7px;
+  }
+
+  .chat-header :deep(.smax-av) {
+    width: 32px !important;
+    height: 32px !important;
+    flex-basis: 32px;
+  }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+  }
+}
 </style>
