@@ -3,7 +3,7 @@
     <OfflineIndicator />
 
     <!-- Slim mobile app bar -->
-    <v-app-bar density="compact" flat>
+    <v-app-bar density="compact" flat class="mobile-app-bar">
       <div class="d-flex align-center ml-3" style="gap: 8px;">
         <div class="d-flex align-center justify-center" style="width: 28px; height: 28px; background: linear-gradient(135deg, #00F2FF, #0077B6); border-radius: 8px;">
           <v-icon size="16" color="white">mdi-robot</v-icon>
@@ -23,8 +23,8 @@
     </v-app-bar>
 
     <!-- Main content with padding for bottom nav -->
-    <v-main>
-      <div style="padding-bottom: 72px;">
+    <v-main class="mobile-main">
+      <div class="mobile-main-content">
         <slot />
       </div>
     </v-main>
@@ -62,3 +62,19 @@ function logout() {
   router.push('/login');
 }
 </script>
+
+<style scoped>
+.mobile-app-bar {
+  padding-top: env(safe-area-inset-top);
+}
+
+.mobile-main {
+  --mobile-app-bar-offset: calc(48px + env(safe-area-inset-top));
+  padding-top: var(--mobile-app-bar-offset) !important;
+}
+
+.mobile-main-content {
+  min-height: calc(100dvh - var(--mobile-app-bar-offset));
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+}
+</style>
