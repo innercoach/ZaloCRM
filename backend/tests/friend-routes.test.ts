@@ -8,11 +8,14 @@ import { mockUser, mockZaloOps } from './test-helpers.js';
 
 // ── Hoisted mock state ────────────────────────────────────────────────────────
 const zaloOpsMock = mockZaloOps();
+const friendFindUnique = vi.fn();
+const friendFindFirst = vi.fn();
 
 vi.mock('../src/shared/database/prisma-client.js', () => ({
   prisma: {
     zaloAccount: { findFirst: vi.fn() },
     zaloAccountAccess: { findFirst: vi.fn() },
+    friend: { findUnique: friendFindUnique, findFirst: friendFindFirst },
   },
 }));
 vi.mock('../src/shared/zalo-operations.js', () => ({
@@ -23,6 +26,9 @@ vi.mock('../src/shared/zalo-operations.js', () => ({
       super(msg); this.code = code; this.statusCode = statusCode;
     }
   },
+}));
+vi.mock('../src/modules/zalo/friend-event-handler.js', () => ({
+  markFriendRequestSent: vi.fn(),
 }));
 vi.mock('../src/shared/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -48,7 +54,11 @@ function buildApp(): FastifyInstance {
   return app;
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  friendFindUnique.mockResolvedValue(null);
+  friendFindFirst.mockResolvedValue(null);
+});
 
 // ── Friend Queries ─────────────────────────────────────────────────────────────
 describe('Friend Queries', () => {
@@ -96,7 +106,7 @@ describe('Friend Queries', () => {
     const res = await buildApp().inject({ method: 'GET', url: `${BASE}/aliases` });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ data: [{ alias: 'Bob' }] });
-    expect(zaloOpsMock.getAliasList).toHaveBeenCalledWith('za-1');
+    expect(zaloOpsMock.getAliasList).toHaveBeenCalledWith('za-1', 100, 1);
   });
 });
 
@@ -116,6 +126,31 @@ describe('Friend Requests', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ data: { status: 'pending' } });
     expect(zaloOpsMock.getFriendRequestStatus).toHaveBeenCalledWith('za-1', 'u7');
+  });
+
+  it('GET /friends/requests/:userId/status — resolves pending sibling before checking status', async () => {
+    friendFindUnique.mockResolvedValue({ contactId: 'contact-1', friendshipStatus: 'accepted' });
+    friendFindFirst.mockResolvedValue({ zaloUidInNick: 'pending-u7' });
+    zaloOpsMock.getFriendRequestStatus.mockResolvedValue({ is_requesting: 1 });
+
+    const res = await buildApp().inject({ method: 'GET', url: `${BASE}/requests/u7/status` });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ data: { is_requesting: 1 }, statusUid: 'pending-u7', resolvedFrom: 'u7' });
+    expect(zaloOpsMock.getFriendRequestStatus).toHaveBeenCalledWith('za-1', 'pending-u7');
+  });
+
+  it('GET /friends/requests/:userId/status — returns neutral status for invalid Zalo UID', async () => {
+    zaloOpsMock.getFriendRequestStatus.mockRejectedValue(new Error('Tham số không hợp lệ'));
+
+    const res = await buildApp().inject({ method: 'GET', url: `${BASE}/requests/u7/status` });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      data: { is_friend: 0, is_requested: 0, is_requesting: 0 },
+      statusUid: 'u7',
+      stale: true,
+    });
   });
 
   it('POST /friends/requests — sends friend request', async () => {

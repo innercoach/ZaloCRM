@@ -36,6 +36,7 @@
         @ask-ai="generateAiSuggestion"
         @set-reply-to="setReplyTo"
         @cancel-reply-edit="onCancelReplyEdit"
+        @add-reaction="onAddReaction"
         @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
       />
     </div>
@@ -60,10 +61,15 @@ const {
 } = useChat();
 
 const { pendingMessages, enqueue, flush } = useOfflineQueue();
-const { replyingTo, setReplyTo, clearReplyTo } = useChatOperations();
+const { replyingTo, setReplyTo, clearReplyTo, addReaction } = useChatOperations();
 
 function onCancelReplyEdit() {
   clearReplyTo();
+}
+
+async function onAddReaction(msgId: string, reaction: string) {
+  if (!selectedConvId.value) return;
+  await addReaction(selectedConvId.value, msgId, reaction);
 }
 
 function onFilterAccount(id: string | null) {
