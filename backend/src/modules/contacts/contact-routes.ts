@@ -17,6 +17,7 @@ import { computeAggregateDisplay, AGGREGATE_INCLUDE } from './contact-aggregate-
 import { runAutomationRules } from '../automation/automation-service.js';
 import { normalizePhone } from '../../shared/utils/phone.js';
 import { logActivity, computeDiff } from '../activity/activity-logger.js';
+import { emitWebhook } from '../api/webhook-service.js';
 
 type QueryParams = Record<string, string>;
 
@@ -266,7 +267,11 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/v1/contacts/:id — detail + friends (per nick) + appointments ──
   // Model B: KH Con = Friend row. Cha aggregate displayStatus/displayLeadScore/
   // displayHasZalo từ friends (xem contact-aggregate-display.ts).
-  app.get('/api/v1/contacts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/contacts/:id', {
+    // Privacy phase integration: Contact PII (name, phone, avatar) sẽ redact nếu requester
+    // không own bất kỳ main-nick conv nào với contact này. Score/engagement metadata vẫn lộ.
+    config: { contentClass: 'mixed' as const, rbacResource: 'contact' as const, rbacAction: 'access' as const },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };
@@ -284,7 +289,13 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       if (!contact) return reply.status(404).send({ error: 'Contact not found' });
 
       const display = computeAggregateDisplay(contact);
-      return { ...contact, ...display };
+
+      // Phase Riêng Tư 2026-05-22: blur PII nếu contact có friend row thuộc main-nick non-owned (Q4 lock)
+      const { buildPrivacyContext, shouldRedactContactPii, redactContact } = await import('../privacy/redact.js');
+      const privacyCtx = await buildPrivacyContext(request);
+      const shouldRedact = await shouldRedactContactPii(contact.id, privacyCtx);
+      const merged = { ...contact, ...display };
+      return shouldRedact ? redactContact(merged as any) : merged;
     } catch (err) {
       logger.error('[contacts] Detail error:', err);
       return reply.status(500).send({ error: 'Failed to fetch contact' });
@@ -334,6 +345,27 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
           assignedUserId: contact.assignedUserId,
         },
       });
+
+      // Phase 7 — emit AutomationEvent for engine triggers bound to contact_created
+      void (async () => {
+        try {
+          const { automationEventBus } = await import('../automation/engine/event-bus.js');
+          automationEventBus.emit({
+            type: 'contact_created',
+            orgId: user.orgId,
+            occurredAt: new Date(),
+            contactId: contact.id,
+            payload: {
+              source: contact.source,
+              status: contact.status,
+              hasPhone: Boolean(contact.phone),
+              hasZalo: Boolean(contact.zaloUid || contact.zaloGlobalId),
+            },
+          });
+        } catch {
+          // engine not loaded — silent
+        }
+      })();
 
       return reply.status(201).send(contact);
     } catch (err) {
@@ -446,6 +478,22 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
           entityId: updated.id,
           details: { changes: infoDiff },
         });
+        // Outbound webhook cho external systems (vd GetFly sync) — fire-and-forget
+        void emitWebhook(user.orgId, 'contact.updated', {
+          contactId: updated.id,
+          changes: infoDiff,
+          contact: {
+            id: updated.id,
+            fullName: updated.fullName,
+            crmName: updated.crmName,
+            phone: updated.phone,
+            email: updated.email,
+            source: updated.source,
+            status: updated.status,
+            gender: updated.gender,
+            leadScore: updated.leadScore,
+          },
+        });
       }
 
       return updated;
@@ -464,15 +512,20 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
 
       if (!Array.isArray(tags)) return reply.status(400).send({ error: 'tags must be an array' });
 
+      // Defensive: strip Zalo-mirror tags (🔵 X) trước khi ghi Contact.tags.
+      // Zalo-mirror là per-nick, sống ở Friend.crmTagsPerNick — KHÔNG bao giờ
+      // được phép viết vào Contact.tags (cross-nick) qua endpoint này.
+      const filteredTags = tags.filter(t => typeof t === 'string' && !t.startsWith('🔵 '));
+
       const existing = await prisma.contact.findFirst({ where: { id, orgId: user.orgId }, select: { id: true, tags: true } });
       if (!existing) return reply.status(404).send({ error: 'Contact not found' });
 
       const oldTags = Array.isArray(existing.tags) ? (existing.tags as string[]) : [];
-      const updated = await prisma.contact.update({ where: { id }, data: { tags } });
+      const updated = await prisma.contact.update({ where: { id }, data: { tags: filteredTags } });
 
-      // ── ACTIVITY LOG — diff tags added/removed ─────────────────────────────
-      const added = tags.filter(t => !oldTags.includes(t));
-      const removed = oldTags.filter(t => !tags.includes(t));
+      // ── ACTIVITY LOG — diff tags added/removed (so với filteredTags vì đó là DB state mới)
+      const added = filteredTags.filter(t => !oldTags.includes(t));
+      const removed = oldTags.filter(t => !filteredTags.includes(t));
       for (const t of added) {
         logActivity({
           orgId: user.orgId,
@@ -494,6 +547,12 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // ── Phase 6 polish P2 quick win — VIP tag → +intent signal ───────────
+      if (added.length > 0) {
+        const { onCrmTagsAdded } = await import('../scoring/scoring-hooks.js');
+        onCrmTagsAdded(user.orgId, updated.id, added);
+      }
+
       return updated;
     } catch (err) {
       logger.error('[contacts] Update tags error:', err);
@@ -502,7 +561,14 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── DELETE /api/v1/contacts/:id ───────────────────────────────────────────
-  app.delete('/api/v1/contacts/:id', async (request: FastifyRequest, reply: FastifyReply) => {
+  // RBAC Phase Phân Quyền 2026-05-21: require contact.delete grant
+  app.delete('/api/v1/contacts/:id', {
+    preHandler: async (request, reply) => {
+      const { requireGrant } = await import('../rbac/rbac-middleware.js');
+      return requireGrant('contact', 'delete')(request, reply);
+    },
+    config: { contentClass: 'mixed', rbacResource: 'contact', rbacAction: 'delete' },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const user = request.user!;
       const { id } = request.params as { id: string };
@@ -718,6 +784,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         select: {
           id: true, contactId: true, statusId: true, leadScore: true,
           crmTagsPerNick: true, aliasInNick: true,
+          zaloAccountId: true, zaloUidInNick: true,  // cần để push alias qua SDK
         },
       });
       if (!friend) return reply.status(404).send({ error: 'Friend not found' });
@@ -776,8 +843,33 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             action: 'friend_alias_change',
             entityType: 'contact',
             entityId,
-            details: { old: friend.aliasInNick, new: body.aliasInNick, friendId: friend.id },
+            details: { old: friend.aliasInNick, new: body.aliasInNick, friendId: friend.id, trigger: 'crm_edit' },
           });
+
+          // CRM → Zalo Real: push alias via SDK. Fire-and-forget — không block PUT
+          // response. Nếu SDK fail (account offline / network), log warn; lần sync
+          // alias periodic sẽ thấy mismatch và reconcile (CRM là source of truth ở
+          // moment user edit, nhưng nếu Zalo Real bị thay đổi parallel → race lần
+          // touch sau resolve).
+          const newAlias = body.aliasInNick;
+          const uidToTarget = friend.zaloUidInNick;
+          const accountIdToCall = friend.zaloAccountId;
+          if (uidToTarget && accountIdToCall) {
+            void (async () => {
+              try {
+                const { zaloOps } = await import('../../shared/zalo-operations.js');
+                if (newAlias && newAlias.trim()) {
+                  await zaloOps.changeFriendAlias(accountIdToCall, newAlias.trim(), uidToTarget);
+                  logger.info(`[friends] Pushed alias "${newAlias}" → Zalo for uid=${uidToTarget}`);
+                } else {
+                  await zaloOps.removeFriendAlias(accountIdToCall, uidToTarget);
+                  logger.info(`[friends] Removed alias on Zalo for uid=${uidToTarget}`);
+                }
+              } catch (err) {
+                logger.warn(`[friends] Push alias to Zalo failed (uid=${uidToTarget}):`, err);
+              }
+            })();
+          }
         }
         if (cleanTags !== undefined) {
           const oldT = Array.isArray(friend.crmTagsPerNick) ? (friend.crmTagsPerNick as string[]) : [];
@@ -797,6 +889,31 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
               details: { tag: t, level: 'friend', friendId: friend.id },
             });
           }
+        }
+      }
+
+      // Outbound webhook cho external systems (vd GetFly sync per-pair) — fire-and-forget.
+      // Mỗi loại change emit event riêng để external system filter dễ hơn.
+      if (entityId) {
+        if (body.aliasInNick !== undefined && body.aliasInNick !== friend.aliasInNick) {
+          void emitWebhook(user.orgId, 'friend.alias_changed', {
+            friendId: friend.id, contactId: entityId,
+            zaloAccountId: friend.zaloAccountId, zaloUidInNick: friend.zaloUidInNick,
+            old: friend.aliasInNick, new: body.aliasInNick,
+            origin: 'crm',
+          });
+        }
+        if (body.statusId !== undefined && body.statusId !== friend.statusId) {
+          void emitWebhook(user.orgId, 'friend.status_changed', {
+            friendId: friend.id, contactId: entityId,
+            old: friend.statusId, new: body.statusId,
+          });
+        }
+        if (body.leadScore !== undefined && body.leadScore !== friend.leadScore) {
+          void emitWebhook(user.orgId, 'friend.score_changed', {
+            friendId: friend.id, contactId: entityId,
+            old: friend.leadScore, new: body.leadScore,
+          });
         }
       }
 
@@ -1421,6 +1538,39 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       logger.error('[contacts] dismiss parent-candidate error:', err);
       return reply.status(500).send({ error: 'Failed to dismiss candidate' });
+    }
+  });
+
+  // ── POST /api/v1/admin/run-detector — chạy duplicate-detector ngay, không đợi 02:30 UTC cron
+  //    Endpoint admin-only (owner/admin role). Trả về stats sau khi chạy xong.
+  //    Use case: sau khi sync backfill globalId cho Contact stub legacy, anh muốn detector
+  //    auto-merge ngay không đợi cron daily next.
+  app.post('/api/v1/admin/run-detector', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      if (!['owner', 'admin'].includes(user.role)) {
+        return reply.status(403).send({ error: 'Chỉ admin/owner được phép trigger detector' });
+      }
+      const startedAt = Date.now();
+      logger.info(`[admin] run-detector triggered by user ${user.id}`);
+      // Lazy import — tránh circular dep + chỉ load khi cần
+      const { runContactIntelligence } = await import('./contact-intelligence.js');
+      await runContactIntelligence();
+      const durationMs = Date.now() - startedAt;
+      // Stats sau khi chạy: count parent candidates undismissed, duplicate groups unresolved
+      const [candidates, duplicates] = await Promise.all([
+        prisma.parentCandidate.count({ where: { orgId: user.orgId, dismissed: false } }),
+        prisma.duplicateGroup.count({ where: { orgId: user.orgId, resolved: false } }),
+      ]);
+      return reply.send({
+        ok: true,
+        durationMs,
+        parentCandidates: candidates,
+        duplicateGroups: duplicates,
+      });
+    } catch (err) {
+      logger.error('[admin] run-detector error:', err);
+      return reply.status(500).send({ error: 'Detector run failed', detail: String(err) });
     }
   });
 

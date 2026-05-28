@@ -31,36 +31,49 @@
           class="nav-tab"
           :class="{ active: isActive(tab) }"
         >
-          <v-icon class="ic" size="16">{{ tab.icon }}</v-icon>{{ tab.label }}
+          <span class="ic">{{ tab.icon }}</span>{{ tab.label }}
         </RouterLink>
 
+        <!-- Legacy automation dropdown (kept for backward compat — Phase 7 Bot-Auto
+             is now a top-level primary tab via primaryTabs array above) -->
         <v-menu open-on-hover>
           <template #activator="{ props: act }">
-            <button class="nav-tab" :class="{ active: isPathPrefix('/automation') }" v-bind="act">
-              <v-icon class="ic" size="16">mdi-creation-outline</v-icon>Automation<span class="caret">▾</span>
+            <button
+              class="nav-tab"
+              :class="{ active: isLegacyAutomationActive }"
+              v-bind="act"
+            >
+              <span class="ic">⚡</span>Automation<span class="caret">▾</span>
             </button>
           </template>
           <v-list density="compact" min-width="220">
-            <v-list-item to="/automation" title="Tổng quan" prepend-icon="mdi-view-grid-outline" />
-            <v-list-item to="/automation?tab=send-message" title="Nhắn tin" prepend-icon="mdi-send-clock-outline" />
-            <v-list-item to="/automation?tab=add-friend" title="Kết bạn" prepend-icon="mdi-account-plus-outline" />
-            <v-list-item to="/automation?tab=follow-up" title="Bám đuổi" prepend-icon="mdi-target-account" />
+            <v-list-item to="/automation" title="Rules &amp; Templates (legacy)" prepend-icon="mdi-chart-box-outline" />
           </v-list>
         </v-menu>
 
         <v-menu open-on-hover>
           <template #activator="{ props: act }">
             <button class="nav-tab" :class="{ active: isSettingsActive }" v-bind="act">
-              <v-icon class="ic" size="16">mdi-tune-variant</v-icon>Cài đặt<span class="caret">▾</span>
+              <span class="ic">⚙</span>Cài đặt<span class="caret">▾</span>
             </button>
           </template>
-          <v-list density="compact" min-width="220">
-            <v-list-item to="/zalo-accounts" title="Tài khoản Zalo" prepend-icon="mdi-cellphone-cog" />
-            <v-list-item to="/api-settings" title="API &amp; Webhook" prepend-icon="mdi-cloud-braces" />
-            <v-list-item to="/integrations" title="Tích hợp" prepend-icon="mdi-transit-connection-variant" />
+          <v-list density="compact" min-width="240">
+            <v-list-item to="/settings/personal/profile" title="Hồ sơ của tôi" prepend-icon="mdi-account-circle-outline" />
             <v-divider />
-            <v-list-item to="/settings" title="Nhân viên" prepend-icon="mdi-account-settings-outline" />
-            <v-list-item to="/settings?tab=roles" title="Phân quyền" prepend-icon="mdi-shield-key-outline" />
+            <v-list-subheader>Tổ chức &amp; Nhân sự</v-list-subheader>
+            <v-list-item to="/settings/team/users" title="Nhân viên" prepend-icon="mdi-account-cog-outline" />
+            <v-list-item to="/settings/team/teams" title="Đội nhóm" prepend-icon="mdi-account-group-outline" />
+            <v-list-item to="/settings/team/roles" title="Vai trò &amp; Phân quyền" prepend-icon="mdi-shield-account-outline" />
+            <v-divider />
+            <v-list-subheader>CRM &amp; Kênh</v-list-subheader>
+            <v-list-item to="/settings/crm/tags" title="Tag CRM" prepend-icon="mdi-tag-multiple-outline" />
+            <v-list-item to="/settings/crm/scoring" title="Lead scoring" prepend-icon="mdi-chart-line" />
+            <v-list-item to="/settings/channels/zalo" title="Tài khoản Zalo" prepend-icon="mdi-cellphone-link" />
+            <v-list-item to="/settings/channels/integrations" title="Tích hợp" prepend-icon="mdi-connection" />
+            <v-divider />
+            <v-list-item to="/settings/dev/api" title="API &amp; Webhook" prepend-icon="mdi-api" />
+            <v-divider />
+            <v-list-item to="/settings" title="📋 Xem tất cả cài đặt" prepend-icon="mdi-cog-outline" />
           </v-list>
         </v-menu>
       </nav>
@@ -79,7 +92,7 @@
 
       <!-- Right icon buttons -->
       <RouterLink to="/groups" class="icon-btn" title="Nhóm">
-        <v-icon size="18">mdi-account-group</v-icon>
+        <v-icon size="18">mdi-account-group-outline</v-icon>
       </RouterLink>
 
       <NotificationBell class="icon-btn-wrap" />
@@ -93,10 +106,10 @@
         <v-list density="compact" min-width="200">
           <v-list-item :title="authStore.user?.fullName || ''" :subtitle="authStore.user?.email || ''" />
           <v-divider />
-          <v-list-item to="/profile" title="Hồ sơ" prepend-icon="mdi-account-circle" />
-          <v-list-item @click="toggleTheme" :title="isDark ? 'Theme sáng' : 'Theme tối golden'" :prepend-icon="isDark ? 'mdi-white-balance-sunny' : 'mdi-weather-night'" />
+          <v-list-item to="/profile" title="Hồ sơ" prepend-icon="mdi-account-circle-outline" />
+          <v-list-item @click="toggleTheme" :title="isDark ? 'Theme sáng' : 'Theme tối (legacy)'" :prepend-icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'" />
           <v-divider />
-          <v-list-item @click="logout" title="Đăng xuất" prepend-icon="mdi-logout-variant" />
+          <v-list-item @click="logout" title="Đăng xuất" prepend-icon="mdi-logout" />
         </v-list>
       </v-menu>
     </header>
@@ -125,12 +138,12 @@ const route = useRoute();
 const authStore = useAuthStore();
 const router = useRouter();
 
-const isDark = ref((localStorage.getItem('theme') || 'golden-dark') === 'golden-dark');
+const isDark = ref((localStorage.getItem('theme') || 'smax-light') === 'legacy-dark');
 
 onMounted(() => {
-  const saved = localStorage.getItem('theme') || 'golden-dark';
+  const saved = localStorage.getItem('theme') || 'smax-light';
   theme.global.name.value = saved;
-  isDark.value = saved === 'golden-dark';
+  isDark.value = saved === 'legacy-dark';
 });
 
 interface NavTab {
@@ -141,31 +154,38 @@ interface NavTab {
 }
 
 // Excel-driven menu (cấp 1) — Automation/Cài đặt được render riêng với dropdown.
+// Bot-Auto (Phase 7) là tab top-level riêng (giống smax.ai), tách hẳn khỏi
+// legacy Automation dropdown để user không bị nhầm 2 hệ thống.
 const primaryTabs: NavTab[] = [
-  { path: '/',             label: 'Dashboard',  icon: 'mdi-view-dashboard-outline', matchPrefix: '/$' },
-  { path: '/chat',         label: 'Tin nhắn',   icon: 'mdi-chat-outline' },
-  { path: '/friends',      label: 'Bạn bè',     icon: 'mdi-account-multiple-plus-outline' },
-  { path: '/contacts',     label: 'Khách hàng', icon: 'mdi-card-account-details-outline' },
-  { path: '/appointments', label: 'Lịch hẹn',   icon: 'mdi-calendar-month-outline' },
-  { path: '/analytics',    label: 'Phân tích',  icon: 'mdi-chart-timeline-variant' },
-  { path: '/reports',      label: 'Báo cáo',    icon: 'mdi-file-chart-outline' },
+  { path: '/',                       label: 'Dashboard',   icon: '🏠', matchPrefix: '/$' },
+  { path: '/chat',                   label: 'Tin nhắn',    icon: '💬' },
+  { path: '/friends',                label: 'Bạn bè',      icon: '👥' },
+  { path: '/contacts',               label: 'Khách hàng',  icon: '🧑' },
+  { path: '/leads/stuck',            label: 'KH đình trệ', icon: '🚨' },
+  { path: '/appointments',           label: 'Lịch hẹn',    icon: '📅' },
+  { path: '/automation/bot/triggers', label: 'Bot-Auto',   icon: '🤖', matchPrefix: '/automation/bot' },
+  { path: '/analytics',              label: 'Phân tích',   icon: '📈' },
+  { path: '/reports',                label: 'Báo cáo',     icon: '📊' },
 ];
 
 function isActive(tab: NavTab): boolean {
   if (tab.matchPrefix === '/$') return route.path === '/';
+  if (tab.matchPrefix) {
+    return route.path === tab.matchPrefix || route.path.startsWith(tab.matchPrefix + '/');
+  }
   return route.path === tab.path || route.path.startsWith(tab.path + '/');
 }
-function isPathPrefix(prefix: string): boolean {
-  return route.path === prefix || route.path.startsWith(prefix + '/');
-}
 const isSettingsActive = computed(() =>
-  ['/settings', '/api-settings', '/integrations', '/zalo-accounts'].some(p =>
-    route.path === p || route.path.startsWith(p + '/'),
-  ),
+  route.path === '/settings' || route.path.startsWith('/settings/'),
+);
+// Highlight legacy Automation dropdown ONLY when on /automation (exact) — do NOT
+// activate when on /automation/bot/* (that's the top-level Bot-Auto tab).
+const isLegacyAutomationActive = computed(
+  () => route.path === '/automation' || (route.path.startsWith('/automation') && !route.path.startsWith('/automation/bot')),
 );
 
 // Workspace — placeholder single-tenant cho Phase 1
-const workspaceName = computed(() => 'HUY TRAN');
+const workspaceName = computed(() => authStore.user?.fullName?.split(' ')[0] || 'hsholding');
 const workspaceShort = computed(() =>
   workspaceName.value.slice(0, 2).toUpperCase(),
 );
@@ -179,7 +199,7 @@ const initials = computed(() => {
 });
 
 function toggleTheme() {
-  const next = isDark.value ? 'smax-light' : 'golden-dark';
+  const next = isDark.value ? 'smax-light' : 'legacy-dark';
   isDark.value = !isDark.value;
   theme.global.name.value = next;
   localStorage.setItem('theme', next);
@@ -193,26 +213,23 @@ function logout() {
 
 <style scoped>
 .smax-topnav {
-  background: linear-gradient(180deg, rgba(16, 21, 34, 0.96), rgba(7, 10, 18, 0.92));
-  color: var(--gold-text);
+  background: var(--smax-header-bg);
+  color: white;
   height: var(--smax-topnav-h);
   display: flex; align-items: center;
-  padding: 0 14px; gap: 6px;
+  padding: 0 13px; gap: 4px;
   flex-shrink: 0;
   position: sticky; top: 0; z-index: 100;
-  border-bottom: 1px solid var(--gold-border);
-  backdrop-filter: blur(14px);
 }
 
 .logo {
-  width: 36px; height: 36px;
-  background: var(--gold-surface-elevated); border-radius: 10px;
+  width: 35px; height: 35px;
+  background: white; border-radius: 7px;
   display: flex; align-items: center; justify-content: center;
   margin-right: 4px;
   text-decoration: none;
   overflow: hidden;
   padding: 2px;
-  border: 1px solid var(--gold-border);
 }
 .logo img {
   width: 100%; height: 100%;
@@ -220,21 +237,21 @@ function logout() {
 }
 
 .workspace {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid var(--gold-border);
+  background: rgba(255,255,255,0.06);
+  border: none;
   display: flex; align-items: center; gap: 7px;
-  padding: 7px 11px; border-radius: 10px;
+  padding: 7px 11px; border-radius: 7px;
   margin-right: 13px;
-  cursor: pointer; color: var(--gold-text);
+  cursor: pointer; color: white;
   font-size: 13px;
 }
-.workspace:hover { background: var(--gold-primary-soft); border-color: rgba(214, 168, 79, 0.34); }
+.workspace:hover { background: rgba(255,255,255,0.10); }
 .ws-logo {
   width: 24px; height: 24px;
-  background: linear-gradient(135deg, var(--gold-primary), var(--gold-primary-hover));
+  background: linear-gradient(135deg, #ff5722, #d84315);
   border-radius: 5px;
   display: flex; align-items: center; justify-content: center;
-  color: #070a12; font-size: 11px; font-weight: 600;
+  color: white; font-size: 11px; font-weight: 600;
 }
 .opacity-50 { opacity: 0.5; }
 
@@ -247,9 +264,9 @@ function logout() {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 9px 13px; border-radius: 7px;
   cursor: pointer;
-  color: var(--gold-text-secondary);
+  color: rgba(255,255,255,0.75);
   font-size: 13px;
-  background: transparent; border: 1px solid transparent;
+  background: transparent; border: none;
   white-space: nowrap;
   text-decoration: none;
 }
@@ -270,17 +287,8 @@ function logout() {
 }
 .nav-tab .ic { font-size: 14px; line-height: 1; }
 .nav-tab .caret { font-size: 10px; opacity: 0.7; margin-left: 2px; }
-.nav-tab:hover {
-  color: var(--gold-text);
-  background: rgba(255,255,255,0.05);
-  border-color: var(--gold-border);
-}
-.nav-tab.active {
-  color: var(--gold-primary);
-  background: var(--gold-primary-soft);
-  border-color: rgba(214, 168, 79, 0.32);
-  font-weight: 500;
-}
+.nav-tab:hover { background: rgba(255,255,255,0.06); color: white; }
+.nav-tab.active { background: rgba(255,255,255,0.12); color: white; font-weight: 500; }
 
 .topnav-spacer { flex: 1; min-width: 0; }
 
@@ -372,10 +380,7 @@ function logout() {
 }
 
 .smax-main {
-  background:
-    radial-gradient(circle at top left, rgba(214, 168, 79, 0.14), transparent 30rem),
-    var(--gold-bg);
-  color: var(--gold-text);
+  background: var(--smax-grey-100);
 }
 .smax-main :deep(.v-main__wrap) { min-height: calc(100vh - var(--smax-topnav-h)); }
 

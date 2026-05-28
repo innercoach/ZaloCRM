@@ -12,7 +12,21 @@ import { logActivity, computeDiff } from '../activity/activity-logger.js';
 type QueryParams = Record<string, string>;
 
 const APPOINTMENT_INCLUDE = {
-  contact: { select: { id: true, fullName: true, phone: true, avatarUrl: true } },
+  contact: {
+    select: {
+      id: true,
+      fullName: true,
+      phone: true,
+      avatarUrl: true,
+      // Per-nick Zalo avatar fallback — Contact.avatarUrl thường null cho KH import từ Zalo,
+      // avatar thật ở Friend.zaloAvatarUrl. FE resolveAvatarUrl chọn cái nào có trước.
+      friends: {
+        select: { id: true, zaloAvatarUrl: true, zaloDisplayName: true, lastInboundAt: true },
+        orderBy: { lastInboundAt: { sort: 'desc' as const, nulls: 'last' as const } },
+        take: 5,
+      },
+    },
+  },
   assignedUser: { select: { id: true, fullName: true } },
   statusChangedBy: { select: { id: true, fullName: true, email: true } },
 } as const;
@@ -191,6 +205,10 @@ export async function appointmentRoutes(app: FastifyInstance): Promise<void> {
           type: body.type,
           status: body.status ?? 'scheduled',
           notes: body.notes,
+          // 2026-05-21 "Nhắc hẹn" refactor
+          title: body.title ?? null,
+          durationMin: typeof body.durationMin === 'number' ? body.durationMin : 15,
+          location: body.location ?? null,
         },
         include: APPOINTMENT_INCLUDE,
       });
@@ -210,6 +228,22 @@ export async function appointmentRoutes(app: FastifyInstance): Promise<void> {
           notes: appointment.notes,
         },
       });
+
+      // Phase 6 — apply scoring signal cho mọi Friend của contact (per-pair).
+      // Sale có thể book lịch cho 1 nick cụ thể, nhưng signal apply lên all Friend
+      // vì appointment thuộc Contact-level (KH lớn), aggregate sẽ MAX về Contact.
+      void (async () => {
+        try {
+          const friends = await prisma.friend.findMany({
+            where: { contactId: appointment.contactId, orgId: user.orgId },
+            select: { id: true },
+          });
+          const { onAppointmentCreate } = await import('../scoring/scoring-hooks.js');
+          for (const f of friends) onAppointmentCreate(user.orgId, f.id);
+        } catch {
+          /* silent */
+        }
+      })();
 
       return reply.status(201).send(appointment);
     } catch (err) {
@@ -249,6 +283,10 @@ export async function appointmentRoutes(app: FastifyInstance): Promise<void> {
           type: body.type,
           status: body.status,
           notes: body.notes,
+          // 2026-05-21 nhắc hẹn fields
+          ...(body.title !== undefined ? { title: body.title || null } : {}),
+          ...(typeof body.durationMin === 'number' ? { durationMin: body.durationMin } : {}),
+          ...(body.location !== undefined ? { location: body.location || null } : {}),
           ...(statusChanging ? { statusChangedByUserId: user.id, statusChangedAt: new Date() } : {}),
         },
         include: APPOINTMENT_INCLUDE,
@@ -270,6 +308,22 @@ export async function appointmentRoutes(app: FastifyInstance): Promise<void> {
           entityId: updated.contactId,
           details: { appointmentId: updated.id, oldStatus: existing.status, newStatus: body.status, notes: body.notes },
         });
+
+        // Phase 6 — appointment_complete trigger scoring signal (+35 Intent)
+        if (body.status === 'completed' && updated.contactId) {
+          void (async () => {
+            try {
+              const friends = await prisma.friend.findMany({
+                where: { contactId: updated.contactId, orgId: user.orgId },
+                select: { id: true },
+              });
+              const { onAppointmentComplete } = await import('../scoring/scoring-hooks.js');
+              for (const f of friends) onAppointmentComplete(user.orgId, f.id);
+            } catch {
+              /* silent */
+            }
+          })();
+        }
       } else if (dateChanging) {
         logActivity({
           orgId: user.orgId,

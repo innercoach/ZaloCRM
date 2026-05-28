@@ -12,19 +12,20 @@
           @input="onSearchInput"
         />
         <button class="cl-new-msg" title="Bắt đầu cuộc trò chuyện mới" @click="newMsgOpen = true">
-          <v-icon size="18">mdi-message-plus-outline</v-icon>
+          <v-icon size="18">mdi-message-plus</v-icon>
           <span>Tin nhắn mới</span>
         </button>
       </div>
 
-      <!-- Label chip bar (filter theo tag CRM) -->
-      <div v-if="availableTags.length" class="cl-label-bar">
+      <!-- Label chip bar (filter theo tag CRM) — SINGLE-SELECT.
+           Khi 1 tag active → ẩn tag khác. Click lại để clear (show all). -->
+      <div v-if="visibleTags.length" class="cl-label-bar">
         <span
-          v-for="tag in availableTags"
+          v-for="tag in visibleTags"
           :key="tag"
           class="cl-label-chip"
           :class="{ active: filters.tags.includes(tag), 'is-zalo': isZaloManaged(tag) }"
-          :style="{ '--tag-color': tagColor(tag) }"
+          :style="{ '--tag-color': tagColor(tag) || '#6B7280' }"
           @click="toggleTag(tag)"
         >{{ cleanTagName(tag) }}</span>
 
@@ -32,31 +33,24 @@
           v-if="filters.tags.length"
           class="clear-tags"
           @click="filters.tags = []"
-          title="Xoá lọc tag"
-        >
-          <v-icon size="16">mdi-close</v-icon>
-        </button>
+          title="Bỏ lọc tag · hiển thị lại tất cả"
+        >×</button>
       </div>
 
-      <!-- Tab Main / Other (giữ business logic) -->
-      <div class="cl-tabs">
-        <button
-          class="cl-tab"
-          :class="{ active: activeTab === 'main' }"
-          @click="activeTab = 'main'"
-        >Chính<span class="cl-tab-count">{{ counts.total - 0 }}</span></button>
-        <button
-          class="cl-tab"
-          :class="{ active: activeTab === 'other' }"
-          @click="activeTab = 'other'"
-        >Khác</button>
-      </div>
+      <!-- Phase 6+ Inbox Triage Filter Bar (Pills + 4 tabs + Mini counter) -->
+      <!-- Old "Chính/Khác" tabs replaced by 4-tab single-active trong slot này. -->
+      <slot name="filters" />
     </div>
 
     <!-- ════════ Conv items ════════ -->
     <div ref="scrollContainer" class="conv-scroll">
-      <div v-if="loading" class="loading">Đang tải…</div>
+      <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
+      <!-- Phase A perf fix v2 (2026-05-21) — Re-thêm TransitionGroup nhưng với
+           :key="activeTabKey" → tab switch tạo TransitionGroup INSTANCE MỚI,
+           Vue ko so sánh position cũ vs mới (vì khác instance), tab switch instant.
+           Trong cùng tab, key giữ nguyên → reorder (tin mới đến) animate mượt. -->
+      <TransitionGroup :key="activeTabKey || 'default'" name="conv-list" tag="div" class="conv-list-inner">
       <div
         v-for="conv in conversations"
         :key="conv.id"
@@ -83,7 +77,7 @@
         <div class="ci-body">
           <div class="ci-name-row">
             <div class="ci-name">
-              <v-icon v-if="conv.threadType === 'group'" class="group-icon" size="16">mdi-account-group-outline</v-icon>
+              <span v-if="conv.threadType === 'group'" class="group-icon">👥</span>
               {{ displayName(conv) }}
             </div>
             <div class="ci-meta-right">
@@ -92,13 +86,28 @@
                 v-if="conv.unreadCount > 0 && conv.id !== selectedId"
                 class="ci-unread-count"
               >{{ conv.unreadCount > 5 ? '5+' : conv.unreadCount }}</div>
+              <!-- Phase 8 — Engagement pattern badge (tooltip teleport to body) -->
+              <span
+                v-if="(conv as any).contact?.engagementPattern && (conv as any).contact?.engagementPattern !== 'noise'"
+                class="engagement-badge"
+                :class="`pattern-${(conv as any).contact?.engagementPattern}`"
+                @mouseenter="onPatternHover($event, (conv as any).contact)"
+                @mouseleave="onPatternLeave"
+              >
+                {{ patternIcon((conv as any).contact?.engagementPattern) }}
+              </span>
             </div>
           </div>
 
-          <div class="ci-preview">{{ lastMessagePreview(conv) }}</div>
+          <div class="ci-preview" :class="`tone-${lastMessagePreviewTone(conv) ?? 'normal'}`">
+            <!-- Privacy: click blur preview KHÔNG redirect (tránh nhầm khi click chuyển hội thoại).
+                 Blur thuần visual, không bắt event riêng. -->
+            <PrivateBlur v-if="privacyVisibility.shouldBlurConv(conv)" :redacted="true" mode="inline" />
+            <template v-else>{{ lastMessagePreview(conv) }}</template>
+          </div>
 
           <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định.
-               Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored Zalo-managed tags).
+               Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored 🔵 X).
                Show 3 tag đầu + "+N" chip click xem rest qua v-menu. -->
           <div class="ci-tag-row">
             <span
@@ -108,7 +117,7 @@
               :class="{ 'tag-zalo': isZaloManaged(tag), 'tag-crm': !isZaloManaged(tag) }"
               :style="{ '--tag-color': tagColor(tag) }"
             >
-              <TagIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
+              <ZaloBrandIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
             </span>
 
             <v-menu
@@ -133,7 +142,7 @@
                   :class="{ 'tag-zalo': isZaloManaged(tag), 'tag-crm': !isZaloManaged(tag) }"
                   :style="{ '--tag-color': tagColor(tag) }"
                 >
-                  <TagIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
+                  <ZaloBrandIcon v-if="isZaloManaged(tag)" :size="11" />{{ cleanTagName(tag) }}
                 </span>
               </div>
             </v-menu>
@@ -146,6 +155,7 @@
 
         <AiSentimentBadge v-if="parseSentiment(conv)" :sentiment="parseSentiment(conv)" class="sentiment" />
       </div>
+      </TransitionGroup>
 
       <div v-if="!loading && conversations.length === 0" class="empty-state">
         Chưa có hội thoại nào
@@ -157,14 +167,14 @@
       <v-list density="compact">
         <v-list-item
           v-if="activeTab === 'main'"
-          prepend-icon="mdi-tray-arrow-down"
+          prepend-icon="mdi-archive-arrow-down-outline"
           @click="moveConversation(contextMenu.convId, 'other')"
         >
           <v-list-item-title>Chuyển sang tab Khác</v-list-item-title>
         </v-list-item>
         <v-list-item
           v-else
-          prepend-icon="mdi-tray-arrow-up"
+          prepend-icon="mdi-archive-arrow-up-outline"
           @click="moveConversation(contextMenu.convId, 'main')"
         >
           <v-list-item-title>Chuyển sang tab Chính</v-list-item-title>
@@ -179,6 +189,25 @@
       :default-account-id="composeDefaultAccountId"
       @opened="onComposeOpened"
     />
+
+    <!-- Phase 8 — Engagement pattern tooltip (teleport ra body để escape overflow:hidden) -->
+    <Teleport to="body">
+      <div
+        v-if="patternTipVisible && patternTipData"
+        class="engagement-pattern-tip-portal"
+        :style="patternTipStyle"
+        role="tooltip"
+      >
+        <strong class="ept-title">{{ patternIcon(patternTipData.pattern) }} {{ patternLabel(patternTipData.pattern) }}</strong>
+        <span class="ept-meaning">{{ patternMeaning(patternTipData.pattern) }}</span>
+        <span v-if="patternTipData.score != null" class="ept-detail">
+          Điểm {{ patternTipData.score }}/100
+          <template v-if="patternTipData.trend != null">
+            · trend {{ patternTipData.trend > 0 ? '+' : '' }}{{ patternTipData.trend }}%
+          </template>
+        </span>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -189,8 +218,13 @@ import { api } from '@/api/index';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import NewMessageDialog from '@/components/chat/NewMessageDialog.vue';
-import TagIcon from '@/components/icons/TagIcon.vue';
+import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 import { loadTagDefs, isZaloManaged, cleanTagName, tagColor } from '@/composables/use-crm-tag-defs';
+import { getOrgParts } from '@/composables/use-org-timezone';
+import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
+import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
+
+const privacyVisibility = usePrivacyVisibility();
 
 const props = defineProps<{
   conversations: Conversation[];
@@ -199,6 +233,11 @@ const props = defineProps<{
   search: string;
   accounts?: { id: string; displayName: string | null }[];
   selectedAccountIds?: string[];
+  /** Phase A perf (2026-05-21) — tab key (personal/group/main/other). Dùng làm
+   *  :key cho TransitionGroup → tab switch tạo instance MỚI → bỏ qua FLIP
+   *  animation cross-tab. Reorder trong cùng tab (tin mới đến) vẫn animate.
+   *  Không bắt buộc; nếu missing thì TransitionGroup hoạt động như trước. */
+  activeTabKey?: string;
 }>();
 
 const emit = defineEmits<{
@@ -213,7 +252,6 @@ const emit = defineEmits<{
 
 // ── Compose new message ─────────────────────────────────────────────────────
 const newMsgOpen = ref(false);
-const tagDefsReady = ref(false);
 const composeAccounts = computed(() => props.accounts || []);
 const composeDefaultAccountId = computed<string | null>(() => {
   const ids = props.selectedAccountIds || [];
@@ -244,46 +282,76 @@ function onSearchInput(e: Event) {
   emit('update:search', (e.target as HTMLInputElement).value);
 }
 
+// Single-select: click tag → set ONLY tag đó. Click tag đang active → clear.
+// Khi đã có 1 tag active → tag khác ẩn (visibleTags computed).
 function toggleTag(tag: string) {
   if (filters.tags.includes(tag)) {
-    filters.tags = filters.tags.filter(t => t !== tag);
+    filters.tags = [];          // deselect → clear filter, show all tags lại
   } else {
-    filters.tags.push(tag);
+    filters.tags = [tag];        // single-select chỉ giữ 1 tag
   }
 }
 
+// visibleTags: nếu có tag active → chỉ hiện tag đó. Còn lại → show all.
+const visibleTags = computed(() => {
+  if (filters.tags.length > 0) {
+    return availableTags.value.filter((t: string) => filters.tags.includes(t));
+  }
+  return availableTags.value;
+});
+
 function buildFilterParams(): Record<string, string> {
-  const params: Record<string, string> = { tab: activeTab.value };
-  if (filters.tags.length > 0) params.tags = filters.tags.join(',');
+  // LUÔN include key 'tags' (empty string khi không có tag).
+  // Lý do: ChatView onFiltersUpdate merge với extraFilters cũ — nếu không
+  // gửi 'tags' key, giá trị cũ vẫn tồn tại → list không clear filter khi
+  // user bấm × hoặc click tag để untag. Empty string → backend skip filter.
+  const params: Record<string, string> = {
+    tab: activeTab.value,
+    tags: filters.tags.length > 0 ? filters.tags.join(',') : '',
+  };
   return params;
 }
 
 // Tag color logic giờ qua composable use-crm-tag-defs (tagColor lookup từ CrmTag.color).
 // Legacy TAG_COLOR_MAP + colorOfTag + tagBgColor đã removed sau refactor TagIcon monochromatic.
 
-/* Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored tags).
+/* Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored "🔵 X").
  * Dedup, Zalo tags hiển thị đầu (priority cho per-pair context). */
 function mergedTags(conv: Conversation): string[] {
   const contactTags = Array.isArray(conv.contact?.tags) ? (conv.contact!.tags as string[]) : [];
   const friendTagsRaw = (conv.friendship as { crmTagsPerNick?: string[] } | null | undefined)?.crmTagsPerNick;
   const friendTags = Array.isArray(friendTagsRaw) ? friendTagsRaw : [];
-  tagDefsReady.value;
+  // Dedup, Zalo-managed (🔵 prefix) lên trước
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const t of friendTags) if (isZaloManaged(t) && !seen.has(t)) { seen.add(t); result.push(t); }
-  for (const t of friendTags) if (!isZaloManaged(t) && !seen.has(t)) { seen.add(t); result.push(t); }
+  for (const t of friendTags) if (t.startsWith('🔵 ') && !seen.has(t)) { seen.add(t); result.push(t); }
+  for (const t of friendTags) if (!t.startsWith('🔵 ') && !seen.has(t)) { seen.add(t); result.push(t); }
   for (const t of contactTags) if (!seen.has(t)) { seen.add(t); result.push(t); }
   return result;
 }
 
 // ── Conversation display ───────────────────────────────────────────────────
+// B7 fix — Contact stub "Unknown" (tạo bởi friend-event-handler khi event đến
+// trước message, no name payload) phải fallback sang zaloDisplayName của Friend
+// để không hiện "Unknown" dù sync đã pull về tên Zalo thật.
+function isUsableName(s: string | null | undefined): s is string {
+  return !!s && s.trim().length > 0 && s.trim().toLowerCase() !== 'unknown';
+}
 function displayName(conv: Conversation): string {
   if (conv.threadType === 'group') {
-    return (conv as Conversation & { groupName?: string }).groupName
-      || conv.contact?.fullName
-      || 'Nhóm Zalo';
+    const groupName = (conv as Conversation & { groupName?: string }).groupName;
+    if (isUsableName(groupName)) return groupName!;
+    if (isUsableName(conv.contact?.fullName)) return conv.contact!.fullName!;
+    return 'Nhóm Zalo';
   }
-  return conv.contact?.crmName || conv.contact?.fullName || 'Unknown';
+  // Ưu tiên Tên gợi nhớ Zalo (Friend.aliasInNick) — sync 2-way với Zalo Real.
+  // Fallback fullName (tên Zalo gốc). KHÔNG dùng Contact.crmName để UI khớp Zalo Real.
+  if (isUsableName(conv.friendship?.aliasInNick)) return conv.friendship!.aliasInNick!;
+  if (isUsableName(conv.contact?.fullName)) return conv.contact!.fullName!;
+  // B7 — fallback zaloDisplayName của Friend nếu Contact stub
+  const friendship = conv.friendship as { zaloDisplayName?: string | null } | undefined;
+  if (isUsableName(friendship?.zaloDisplayName)) return friendship!.zaloDisplayName!;
+  return 'Unknown';
 }
 function avatarSrcOf(conv: Conversation): string | null {
   if (conv.threadType === 'group') {
@@ -370,7 +438,6 @@ watch(activeTab, () => {
 onMounted(async () => {
   // Load CrmTag defs (color + managedBy) cho TagIcon render — share cache toàn app
   await Promise.all([fetchCounts(), fetchAvailableTags(), loadTagDefs()]);
-  tagDefsReady.value = true;
 });
 
 /* ── Auto-scroll selected row vào viewport ──────────────────────────────────
@@ -394,37 +461,39 @@ function scrollSelectedIntoView() {
   if (!row || !container) return;
   const rowRect = row.getBoundingClientRect();
   const ctnRect = container.getBoundingClientRect();
-  // Chỉ scroll nếu row nằm ngoài viewport (tránh giật khi đã visible)
   if (rowRect.top < ctnRect.top || rowRect.bottom > ctnRect.bottom) {
-    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   }
 }
 
-// Watch selectedId — scroll khi thay đổi (nav từ extern hoặc click trong list)
 watch(() => props.selectedId, async () => {
-  await nextTick();           // đợi row render xong (đặc biệt khi conv mới append)
+  await nextTick();
   scrollSelectedIntoView();
 }, { immediate: true });
 
-// Watch vị trí của selected conv trong list — nếu BE refresh + reorder (do user
-// vừa send message → conv đó lên top), index sẽ đổi từ N→0 → scroll lại lên top.
-// Watch derived index thay vì watch full array để hiệu suất tốt + chỉ fire khi
-// thật sự cần. Cũng cover case list mới fetch (length đổi).
-const selectedIndex = computed(() => {
-  if (!props.selectedId) return -1;
-  return props.conversations.findIndex(c => c.id === props.selectedId);
-});
-watch(selectedIndex, async () => {
-  await nextTick();
-  scrollSelectedIntoView();
-});
-
 // ── Utility functions ───────────────────────────────────────────────────────
-function lastMessagePreview(conv: Conversation): string {
+// Tone gắn vào preview để CSS render màu theo trạng thái:
+//   danger = đỏ  (E17 KH gọi đến nhỡ — sale CHƯA bắt, cần alert)
+//   muted  = xám (E18 sale gọi không trả lời / E04 recall — không cấp bách)
+//   undefined = normal (text đen mặc định)
+interface PreviewResult { text: string; tone?: 'danger' | 'muted' }
+
+function fmtDuration(sec: number): string {
+  if (!sec || sec < 0) return '';
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function lastMessagePreviewResult(conv: Conversation): PreviewResult {
   const msg = conv.messages?.[0];
-  if (!msg) return '';
-  if (msg.isDeleted) return '(đã thu hồi)';
+  if (!msg) return { text: '' };
+
+  // E04 Tin thu hồi — anh chốt icon 🔂 (proposal 2026-05-21), tone muted
+  if (msg.isDeleted) return { text: '🔂 Tin nhắn đã thu hồi', tone: 'muted' };
+
   const prefix = msg.senderType === 'self' ? 'Bạn: ' : '';
+  const isInbound = msg.senderType !== 'self';
 
   // Parse JSON content (nếu có) để extract title / action
   let parsed: Record<string, unknown> | null = null;
@@ -433,64 +502,128 @@ function lastMessagePreview(conv: Conversation): string {
   }
   const action = typeof parsed?.action === 'string' ? parsed.action : '';
   const titleText = typeof parsed?.title === 'string' ? parsed.title.trim() : '';
+  const params = typeof parsed?.params === 'string'
+    ? safeParseLocal(parsed.params as string)
+    : (parsed?.params as Record<string, unknown> | undefined);
 
-  // Call message (stored as contact_card + action recommened.calltime/misscall)
+  // E14-E19 Cuộc gọi — tách 6 variant theo isCaller + calltype + misscall
   if (action.includes('calltime') || action.includes('misscall')) {
-    const params = typeof parsed?.params === 'string'
-      ? safeParseLocal(parsed.params as string)
-      : (parsed?.params as Record<string, unknown> | undefined);
     const isVideo = params?.calltype === 1;
     const isMissed = action.includes('misscall');
-    const callLabel = isVideo ? 'Video call' : 'Cuộc gọi';
-    if (isMissed) return prefix + `${callLabel} nhỡ`;
-    const dur = Number(params?.duration ?? 0);
-    if (dur > 0) {
-      const m = Math.floor(dur / 60);
-      const s = dur % 60;
-      return prefix + `${callLabel} ${m}:${s.toString().padStart(2, '0')}`;
+    // isCaller=1 nghĩa là bên SDK đang dùng là CALLER. Map sang sender ZaloCRM:
+    // senderType='self' (sale gửi) đồng nghĩa sale là caller.
+    const icon = isVideo ? '📹' : '📞';
+    const kind = isVideo ? 'video' : 'gọi';
+
+    if (isMissed) {
+      // E17/E19: KH gọi đến NHỠ (sale chưa bắt) — DANGER đỏ
+      if (isInbound) return { text: `${icon} Cuộc ${kind} nhỡ`, tone: 'danger' };
+      // E18: sale gọi đi KH không trả lời — muted xám
+      return { text: `${prefix}${icon} KH không trả lời`, tone: 'muted' };
     }
-    return prefix + callLabel;
+
+    // E14/E15/E16: đã nghe — bình thường
+    const dur = Number(params?.duration ?? 0);
+    const durStr = dur > 0 ? ` · ${fmtDuration(dur)}` : '';
+    const dirLabel = isInbound ? 'đến' : 'đi';
+    return { text: `${prefix}${icon} Cuộc ${kind} ${dirLabel}${durStr}` };
   }
 
-  // Reminder (action-based)
+  // E28 Reminder
   if (action === 'msginfo.actionlist' && titleText) {
-    return prefix + truncate(titleText, 50);
+    return { text: prefix + '⏰ ' + truncate(titleText, 50) };
   }
 
-  // Rich content có title → preview bằng title thật, không phải "Tin đặc biệt"
+  // E20 Link share có preview (sau khi P1 reclassify thì content_type='link' rồi)
+  // Vẫn để fallback nếu rows mới chưa reclassify.
+  if (action === 'recommened.link' || action === 'recommended.link') {
+    return { text: prefix + '🔗 ' + truncate(titleText || 'Liên kết', 40) };
+  }
+
+  // E22 Gợi ý bạn bè (action recommened.user) — khác E21 show.profile (danh thiếp)
+  if (action === 'recommened.user' || action === 'recommended.user') {
+    return { text: prefix + '👥 Gợi ý bạn bè' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+  }
+  // E21 Danh thiếp profile thực
+  if (action === 'show.profile') {
+    return { text: prefix + '👤 Danh thiếp' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+  }
+
+  // E25 Bank transfer — extract tên bank từ title hoặc description
+  if (msg.contentType === 'bank_transfer' || action === 'zinstant.bankcard') {
+    const desc = typeof parsed?.description === 'string' ? parsed.description : '';
+    const bankName = titleText || desc.split('\n')[0] || '';
+    return {
+      text: prefix + '💳 Chuyển khoản' + (bankName ? ` · ${truncate(bankName, 25)}` : ''),
+    };
+  }
+
+  // Rich content có title → preview bằng title thật, không phải "rich" raw
   if (msg.contentType === 'rich' && titleText) {
-    return prefix + truncate(titleText.replace(/\n/g, ' · '), 60);
+    return { text: prefix + (action === 'rtf' ? '✨ ' : '') + truncate(titleText.replace(/\n/g, ' · '), 60) };
   }
 
-  // Per content-type
+  // Per content-type chuẩn
   switch (msg.contentType) {
-    case 'image':
-    case 'photo': return prefix + 'Hình ảnh';
-    case 'sticker': return prefix + 'Sticker';
-    case 'video': return prefix + 'Video';
-    case 'voice': return prefix + 'Tin nhắn thoại';
-    case 'gif': return prefix + 'GIF';
-    case 'file': return prefix + (titleText ? truncate(titleText, 40) : 'Tệp đính kèm');
-    case 'link': return prefix + (titleText ? truncate(titleText, 40) : 'Liên kết');
-    case 'bank_transfer': return prefix + 'Tài khoản ngân hàng';
-    case 'call': return prefix + 'Cuộc gọi';
-    case 'qr_code': return prefix + 'Mã QR';
-    case 'reminder': return prefix + (titleText ? truncate(titleText, 40) : 'Nhắc hẹn');
-    case 'poll': return prefix + (titleText ? truncate(titleText, 40) : 'Bình chọn');
-    case 'note': return prefix + (titleText ? truncate(titleText, 40) : 'Ghi chú');
-    case 'forwarded': return prefix + (titleText ? truncate(titleText, 40) : 'Tin nhắn chuyển tiếp');
+    case 'image': {
+      // E06: nếu có caption (title) → hiện caption, không có → "Hình ảnh"
+      if (titleText) return { text: prefix + '📷 ' + truncate(titleText, 40) };
+      // E07 Album — sẽ override ở MessageThread khi group; preview vẫn theo msg cuối
+      const albumTotal = (msg as { albumTotal?: number | null }).albumTotal;
+      if (albumTotal && albumTotal > 1) return { text: prefix + `🖼️ Bộ ảnh (${albumTotal})` };
+      return { text: prefix + '📷 Hình ảnh' };
+    }
+    case 'sticker': return { text: prefix + '🎴 Sticker' };
+    case 'video': {
+      // E08: kèm duration nếu lấy được từ params
+      const vdur = Number(params?.duration ?? 0);
+      return { text: prefix + '🎥 Video' + (vdur > 0 ? ` (${fmtDuration(vdur)})` : '') };
+    }
+    case 'voice':
+    case 'audio': {
+      // E10/E11: tin thoại có duration
+      const adur = Number(params?.duration ?? 0);
+      return { text: prefix + '🎤 Tin thoại' + (adur > 0 ? ` (${fmtDuration(adur)})` : '') };
+    }
+    case 'gif': return { text: prefix + '🎞 GIF' };
+    case 'file': return { text: prefix + '📎 ' + (titleText ? truncate(titleText, 40) : 'Tệp đính kèm') };
+    case 'link': return { text: prefix + '🔗 ' + (titleText ? truncate(titleText, 40) : 'Liên kết') };
+    case 'call': return { text: prefix + '📞 Cuộc gọi' };
+    case 'qr_code': return { text: prefix + '🔲 Mã QR' };
+    case 'reminder': return { text: prefix + '⏰ ' + (titleText ? truncate(titleText, 40) : 'Nhắc hẹn') };
+    case 'poll': {
+      // E29-E32 phân biệt 4 action
+      const label =
+        action === 'create' ? 'Tạo bình chọn'
+        : action === 'vote' ? 'Đã bình chọn'
+        : action === 'update' ? 'Cập nhật bình chọn'
+        : action === 'close' ? 'Đã đóng bình chọn'
+        : 'Bình chọn';
+      return { text: prefix + '📊 ' + label + (titleText ? `: ${truncate(titleText, 25)}` : '') };
+    }
+    case 'note': return { text: prefix + '📝 Ghi chú' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
+    case 'forwarded': return { text: prefix + '↪️ Chuyển tiếp' + (titleText ? `: ${truncate(titleText, 30)}` : '') };
     case 'location': {
       const desc = typeof parsed?.description === 'string' ? parsed.description.trim() : '';
       const label = titleText || desc || 'Vị trí';
-      return prefix + truncate(label, 50);
+      return { text: prefix + '📍 ' + truncate(label, 50) };
     }
-    case 'contact_card': return prefix + (titleText ? truncate(titleText, 40) : 'Danh thiếp');
-    case 'rich': return prefix + 'Tin đặc biệt';
+    case 'contact_card': return { text: prefix + (titleText ? truncate(titleText, 40) : '👤 Danh thiếp') };
+    case 'rich': return { text: prefix + '✨ Tin có định dạng' };
   }
 
-  // Plain text
+  // Plain text — E01
   const text = msg.content || '';
-  return prefix + truncate(text, 50);
+  return { text: prefix + truncate(text, 50) };
+}
+
+// Wrapper giữ chữ ký cũ cho template (chỉ trả text)
+function lastMessagePreview(conv: Conversation): string {
+  return lastMessagePreviewResult(conv).text;
+}
+
+function lastMessagePreviewTone(conv: Conversation): 'danger' | 'muted' | undefined {
+  return lastMessagePreviewResult(conv).tone;
 }
 
 function safeParseLocal(s: string): Record<string, unknown> | null {
@@ -510,6 +643,14 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
   }
 }
 
+// Time format theo spec user (tăng độ rộng tên conv):
+//   < 1 phút     → "Vừa xong"
+//   < 60 phút    → "Xp"   (vd "5p")
+//   < 24h        → "HH:mm"
+//   = 1 ngày     → "Hôm qua"
+//   < 7 ngày     → "Xd"   (vd "3d")
+//   ≥ 7 ngày cùng năm → "DD/MM" (vd "12/05") — không hiện năm
+//   năm cũ (≠ năm nay) → "MM/YYYY" (vd "11/2025") — không hiện ngày
 function formatTime(dateStr: string | null): string {
   if (!dateStr) return '';
   const date = new Date(dateStr);
@@ -519,15 +660,116 @@ function formatTime(dateStr: string | null): string {
   if (diffMins < 1) return 'Vừa xong';
   if (diffMins < 60) return `${diffMins}p`;
   const diffHours = Math.floor(diffMins / 60);
+  // 2026-05-21 Phase B-5: hour/date/year đọc theo org TZ thay vì browser local.
+  // diffMs/diffMins/diffHours/diffDays là delta UTC → TZ-agnostic, OK giữ nguyên.
+  const p = getOrgParts(date);
+  const nowP = getOrgParts(now);
+  if (!p || !nowP) return '';
   if (diffHours < 24) {
-    const hh = date.getHours().toString().padStart(2, '0');
-    const mm = date.getMinutes().toString().padStart(2, '0');
-    return `${hh}:${mm}`;
+    return `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`;
   }
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays === 1) return 'Hôm qua';
   if (diffDays < 7) return `${diffDays}d`;
-  return date.toLocaleDateString('vi-VN');
+  // ≥ 7 ngày — phân biệt cùng năm vs năm cũ (so theo org TZ)
+  const dd = String(p.day).padStart(2, '0');
+  const mm = String(p.month).padStart(2, '0');
+  if (p.year === nowP.year) return `${dd}/${mm}`;
+  return `${mm}/${p.year}`;
+}
+
+// ─── Phase 8 — Engagement pattern badge ──────────────────
+function patternIcon(pattern: string | null | undefined): string {
+  switch (pattern) {
+    case 'hot': return '🔥';
+    case 'champion': return '💎';
+    case 'stable': return '📈';
+    case 'cooling': return '⚠';
+    case 'cold': return '😴';
+    default: return '';
+  }
+}
+
+function patternLabel(pattern: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    hot: 'Đang nóng lên',
+    champion: 'Champion',
+    stable: 'Ổn định',
+    cooling: 'Đang nguội',
+    cold: 'Lạnh',
+  };
+  return pattern ? (labels[pattern] || pattern) : '';
+}
+
+function patternMeaning(pattern: string | null | undefined): string {
+  const meanings: Record<string, string> = {
+    hot: 'Tương tác tăng mạnh tuần này — ưu tiên gọi/chốt sớm.',
+    champion: 'Tương tác đều cao 4 tuần qua — KH chất lượng cao.',
+    stable: 'Tương tác đều ở mức trung bình — nuôi lâu dài.',
+    cooling: 'Tương tác giảm tuần này — cần ping để giữ KH.',
+    cold: 'Gần như không tương tác 4 tuần qua — cân nhắc bỏ qua.',
+  };
+  return pattern ? (meanings[pattern] || '') : '';
+}
+
+// ─── Phase 8 — Teleport tooltip for pattern badge ─────────
+interface PatternTipData {
+  pattern: string;
+  score: number | null;
+  trend: number | null;
+}
+const patternTipVisible = ref(false);
+const patternTipData = ref<PatternTipData | null>(null);
+const patternTipStyle = ref<Record<string, string>>({});
+let patternTipTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onPatternHover(event: MouseEvent, contact: any) {
+  if (!contact?.engagementPattern) return;
+  const target = event.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+
+  // Position tooltip ABOVE badge, right-aligned to badge right edge.
+  // 200px wide tooltip; if too close to viewport edge, flip to below.
+  const tipWidth = 220;
+  const tipEstimatedHeight = 80;
+  const margin = 8;
+
+  let top = rect.top - tipEstimatedHeight - margin;
+  // Flip below if too close to top
+  if (top < 8) top = rect.bottom + margin;
+
+  let left = rect.right - tipWidth;
+  // Don't go off left edge
+  if (left < 8) left = 8;
+  // Don't go off right edge
+  if (left + tipWidth > window.innerWidth - 8) {
+    left = window.innerWidth - tipWidth - 8;
+  }
+
+  patternTipStyle.value = {
+    top: `${top}px`,
+    left: `${left}px`,
+    width: `${tipWidth}px`,
+  };
+  patternTipData.value = {
+    pattern: contact.engagementPattern,
+    score: contact.engagementScore ?? null,
+    trend: contact.engagementTrend ?? null,
+  };
+
+  // Slight delay to avoid flashing on quick mouseovers when scrolling list
+  if (patternTipTimer) clearTimeout(patternTipTimer);
+  patternTipTimer = setTimeout(() => {
+    patternTipVisible.value = true;
+  }, 180);
+}
+
+function onPatternLeave() {
+  if (patternTipTimer) {
+    clearTimeout(patternTipTimer);
+    patternTipTimer = null;
+  }
+  patternTipVisible.value = false;
 }
 </script>
 
@@ -582,37 +824,58 @@ function formatTime(dateStr: string | null): string {
   align-items: center;
 }
 .cl-label-bar::-webkit-scrollbar { height: 4px; }
+/* Chip tag CRM — dùng --tag-color từ tagColor() lookup (sync system color).
+   Text + border ăn theo --tag-color, active state fill background. */
 .cl-label-chip {
   display: inline-flex; align-items: center; gap: 3px;
   padding: 3px 9px;
   border-radius: 11px;
   font-size: 11px; font-weight: 500;
-  border: 1px solid;
+  border: 1px solid var(--tag-color, #D1D5DB);
+  color: var(--tag-color, #4B5563);
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
   user-select: none;
   background: var(--smax-bg);
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.cl-label-chip[data-color="red"]    { color: #c62828; border-color: #ef5350; }
-.cl-label-chip[data-color="red"].active    { background: #ef5350; color: white; }
-.cl-label-chip[data-color="purple"] { color: #6a1b9a; border-color: #ab47bc; }
-.cl-label-chip[data-color="purple"].active { background: #6a1b9a; color: white; }
-.cl-label-chip[data-color="orange"] { color: #ef6c00; border-color: #ffa726; }
-.cl-label-chip[data-color="orange"].active { background: #ff9800; color: white; }
-.cl-label-chip[data-color="yellow"] { color: #f57f17; border-color: #fbc02d; }
-.cl-label-chip[data-color="yellow"].active { background: #f9a825; color: white; }
-.cl-label-chip[data-color="green"]  { color: #2e7d32; border-color: #66bb6a; }
-.cl-label-chip[data-color="green"].active  { background: #43a047; color: white; }
-.cl-label-chip[data-color="blue"]   { color: #1565c0; border-color: #42a5f5; }
-.cl-label-chip[data-color="blue"].active   { background: #1976d2; color: white; }
-.cl-label-chip[data-color="grey"]   { color: var(--smax-grey-700); border-color: var(--smax-grey-300); }
-.cl-label-chip[data-color="grey"].active   { background: var(--smax-grey-700); color: white; }
+.cl-label-chip:hover {
+  background: color-mix(in srgb, var(--tag-color, #6B7280) 12%, transparent);
+}
+.cl-label-chip.active {
+  background: var(--tag-color, #6B7280);
+  color: white;
+  border-color: var(--tag-color, #6B7280);
+  font-weight: 600;
+}
+/* Nút × clear tag filter — to hơn + có border để dễ click */
 .clear-tags {
-  background: transparent; border: none;
-  color: var(--smax-grey-700);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: #FEF2F2;
+  border: 1px solid #FCA5A5;
+  color: #DC2626;
   cursor: pointer;
-  font-size: 16px; line-height: 1; padding: 0 5px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  border-radius: 11px;
+  margin-left: 4px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.clear-tags:hover {
+  background: #FEE2E2;
+  border-color: #F87171;
+  color: #B91C1C;
+}
+.clear-tags:active {
+  background: #FECACA;
 }
 
 .cl-tabs {
@@ -649,6 +912,12 @@ function formatTime(dateStr: string | null): string {
 }
 
 .conv-scroll { flex: 1; overflow-y: auto; }
+.conv-list-inner { display: flex; flex-direction: column; }
+/* Reorder animation Phase A v2 (2026-05-21) — rút 0.25s → 0.15s cho feel snappier.
+   Enter/leave vẫn none vì conv mới (filter match) ko cần animate fade-in. */
+.conv-list-move { transition: transform 0.15s ease; }
+.conv-list-leave-active { transition: none; }
+.conv-list-enter-active { transition: none; }
 .loading {
   padding: 20px; text-align: center;
   color: var(--smax-grey-700); font-size: 12px; font-style: italic;
@@ -701,6 +970,27 @@ function formatTime(dateStr: string | null): string {
   line-height: 1;
 }
 
+/* Phase 8 — Engagement pattern badge */
+.engagement-badge {
+  font-size: 14px;
+  line-height: 1;
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  cursor: help;
+  position: relative;
+  /* Re-enable pointer events (parent .ci-meta-right có pointer-events:none để
+     click vùng meta vẫn bubble lên conv-item). Badge cần nhận hover cho tooltip. */
+  pointer-events: auto;
+}
+.engagement-badge.pattern-hot { background: #FEF2F2; }
+.engagement-badge.pattern-champion { background: #FFFBEB; }
+.engagement-badge.pattern-stable { background: #EFF6FF; }
+.engagement-badge.pattern-cooling { background: #FFF7ED; }
+.engagement-badge.pattern-cold { background: #F4F4F7; }
+
+/* Teleport tooltip lives in body — use :global to escape scoped CSS */
+
 .ci-avatar {
   width: 41px; height: 41px;
   border-radius: 50%;
@@ -729,7 +1019,9 @@ function formatTime(dateStr: string | null): string {
 .ci-name-row {
   display: flex; align-items: center;
   height: 20px;
-  padding-right: 64px; /* chừa rộng hơn để fit "Vừa xong" (~58px), không đè lên tên */
+  /* Giảm 50% padding-right (64px → 38px) để tăng width tên KH.
+     Time format ngắn: "DD/MM" (5 ký tự) hoặc "MM/YYYY" (7 ký tự) ~28px. */
+  padding-right: 38px;
 }
 .ci-name {
   font-size: 14px;
@@ -742,7 +1034,7 @@ function formatTime(dateStr: string | null): string {
 .ci-name :first-child + * { /* tên thật sự — cho phép shrink */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.group-icon { color: var(--smax-grey-700); flex: 0 0 auto; }
+.group-icon { font-size: 11px; }
 /* Meta-right float ra góc phải, không nằm trong flex flow → badge không phá height */
 .ci-meta-right {
   position: absolute; top: 0; right: 0;
@@ -756,11 +1048,20 @@ function formatTime(dateStr: string | null): string {
   line-height: 1;
 }
 .ci-preview {
-  font-size: 14px; color: var(--smax-grey-700);
+  font-size: 12px; color: var(--smax-grey-700);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   margin-top: 2px;
   height: 16px; line-height: 16px;
   padding-right: 30px; /* chừa chỗ cho unread badge float trên */
+}
+/* Tone preview cho cuộc gọi & recall (proposal E04, E17, E18) */
+.ci-preview.tone-danger {
+  color: #dc2626; /* đỏ — KH gọi đến NHỠ chưa bắt, cần alert */
+  font-weight: 600;
+}
+.ci-preview.tone-muted {
+  color: var(--smax-grey-500); /* xám — sale gọi ko trả lời / tin recall */
+  font-style: italic;
 }
 /* Tag row luôn reserve khoảng nhỏ — kể cả khi không có tag */
 .ci-tag-row {
@@ -791,9 +1092,8 @@ function formatTime(dateStr: string | null): string {
   border-color: color-mix(in srgb, var(--tag-color) 70%, white);
   color: color-mix(in srgb, var(--tag-color) 75%, black);
 }
-.tag-mini.tag-zalo :deep(.tag-icon) {
-  color: var(--tag-color);
-}
+/* KHÔNG có "Zalo" text badge trong conv list — .ci-tag-row có overflow:hidden +
+ * height:16px sẽ clip badge. Icon brand Zalo đứng trước tên đã đủ phân biệt. */
 .tag-mini.tag-crm {
   --tag-color: #546E7A;
   background: color-mix(in srgb, var(--tag-color) 10%, white);
@@ -847,9 +1147,23 @@ function formatTime(dateStr: string | null): string {
   background: color-mix(in srgb, var(--tag-color) 12%, white);
   border-color: color-mix(in srgb, var(--tag-color) 70%, white);
   color: color-mix(in srgb, var(--tag-color) 75%, black);
+  position: relative;
+  margin-right: 5px;
 }
-.tag-popup-pill.tag-zalo :deep(.tag-icon) {
-  color: var(--tag-color);
+.tag-popup-pill.tag-zalo::before {
+  content: 'Zalo';
+  position: absolute;
+  top: -6px;
+  right: -3px;
+  background: #0068FF;
+  color: white;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 1px 4px;
+  border-radius: 99px;
+  line-height: 1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 .tag-popup-pill.tag-crm {
   --tag-color: #546E7A;
@@ -874,5 +1188,48 @@ function formatTime(dateStr: string | null): string {
 .empty-state {
   text-align: center; padding: 40px 13px;
   color: var(--smax-grey-700); font-size: 12px;
+}
+</style>
+
+<!-- Unscoped style cho teleport tooltip (đặt body, không reach được scoped CSS) -->
+<style>
+.engagement-pattern-tip-portal {
+  position: fixed;
+  background: #1F2D3D;
+  color: white;
+  padding: 9px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  z-index: 9999;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(255,255,255,0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  letter-spacing: -0.005em;
+  font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+  animation: ept-fade 0.15s ease;
+}
+@keyframes ept-fade {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.engagement-pattern-tip-portal .ept-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+}
+.engagement-pattern-tip-portal .ept-meaning {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.86);
+  line-height: 1.45;
+}
+.engagement-pattern-tip-portal .ept-detail {
+  font-size: 10px;
+  color: #FBBF24;
+  font-weight: 600;
+  margin-top: 2px;
 }
 </style>
